@@ -1,19 +1,15 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import { Card, CardType, Player, Room, ActiveActionState } from './src/types.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-const PORT = 3333;
+const PORT = Number(process.env.PORT) || 3333;
 
 // Internal Room state extending client Room types
 interface ServerActiveAction extends ActiveActionState {
@@ -26,6 +22,9 @@ interface ServerRoom extends Omit<Room, 'players' | 'activeAction'> {
   discardPile: Card[];
   activeAction: ServerActiveAction | null;
   pendingActions: ServerActiveAction[];
+  pendingDamages: PendingDamage[];
+  pacts: PactState[];
+  trackers: TrackerState[];
   privateLogs: Record<string, string[]>;
   dyingTimer?: NodeJS.Timeout;
 }
@@ -33,6 +32,32 @@ interface ServerRoom extends Omit<Room, 'players' | 'activeAction'> {
 interface ServerPlayer extends Player {
   blazeFirstDmgActive?: boolean;
   hasTacticalFirstPlayed?: boolean;
+  isStunned?: boolean;
+  isFrozen?: boolean;
+  isBoundNextTurn?: boolean;
+  isEquipBlocked?: boolean;
+  stoneArmorTriggered?: boolean;
+  towerShieldTriggered?: boolean;
+  magnetTargetId?: string | null;
+}
+
+type DamageKind = 'strike' | 'fire' | 'lightning' | 'tactical' | 'other';
+
+interface PendingDamage {
+  targetId: string;
+  amount: number;
+  sourceId: string;
+  kind: DamageKind;
+}
+
+interface PactState {
+  playerIds: [string, string];
+  expiresOnPlayerId: string;
+}
+
+interface TrackerState {
+  trackerId: string;
+  targetId: string;
 }
 
 // Global server state
@@ -47,27 +72,63 @@ interface CardTemplate {
   emoji: string;
   category: 'basic' | 'tactical' | 'equip' | 'teammate';
   description: string;
+  equipSlot?: 'weapon' | 'armor' | 'accessory';
+  range?: number;
 }
 
 const CARD_TEMPLATES: CardTemplate[] = [
-  { type: 'strike', name: 'Đánh', emoji: '⚔️', category: 'basic', description: 'Gây 1 sát thương lên đối thủ.' },
+  { type: 'strike', name: 'Đánh', emoji: '⚔️', category: 'basic', description: 'Gây 1 sát thương cho một người chơi trong tầm đánh. Mỗi lượt chỉ được dùng 1 lá Đánh.' },
   { type: 'dodge', name: 'Đỡ', emoji: '🛡', category: 'basic', description: 'Chặn một lá Đánh.' },
-  { type: 'heal', name: 'Hồi', emoji: '❤️', category: 'basic', description: 'Hồi 1 máu cho một người chơi.' },
+  { type: 'heal', name: 'Hồi', emoji: '❤️', category: 'basic', description: 'Hồi 1 máu. Có thể dùng để cứu người đang hấp hối.' },
   { type: 'fire', name: 'Lửa', emoji: '🔥', category: 'tactical', description: 'Tất cả người chơi khác phải dùng Đỡ, nếu không nhận 1 sát thương.' },
   { type: 'lightning', name: 'Sét', emoji: '⚡', category: 'tactical', description: 'Chọn một người chơi và gây 1 sát thương.' },
   { type: 'duel', name: 'Đấu', emoji: '⚔️', category: 'tactical', description: 'Hai người lần lượt dùng Đánh. Người không thể dùng nhận 1 sát thương.' },
+  { type: 'explosion', name: 'Nổ', emoji: '💥', category: 'tactical', description: 'Mục tiêu và hai người ngồi liền kề mục tiêu nhận 1 sát thương.' },
+  { type: 'assassinate', name: 'Ám Sát', emoji: '🗡️', category: 'tactical', description: 'Gây 1 sát thương, mục tiêu không được dùng Đỡ.' },
+  { type: 'pursuit', name: 'Truy Đuổi', emoji: '🎯', category: 'tactical', description: 'Gây 1 sát thương. Nếu mục tiêu đã mất máu, gây thêm 1 sát thương.' },
   { type: 'draw', name: 'Rút', emoji: '🎁', category: 'tactical', description: 'Rút 2 lá bài.' },
   { type: 'exchange', name: 'Đổi', emoji: '🔄', category: 'tactical', description: 'Đổi ngẫu nhiên 1 lá bài trên tay với đối phương.' },
   { type: 'lock', name: 'Khóa', emoji: '🚫', category: 'tactical', description: 'Chọn một người chơi. Họ không được dùng kỹ năng đến hết lượt.' },
-  { type: 'view', name: 'Xem', emoji: '👀', category: 'tactical', description: 'Xem ngẫu nhiên 1 lá bài trên tay của đối phương.' },
+  { type: 'stun', name: 'Choáng', emoji: '😵', category: 'tactical', description: 'Mục tiêu bỏ qua giai đoạn rút bài ở lượt kế tiếp.' },
+  { type: 'freeze', name: 'Đóng Băng', emoji: '❄️', category: 'tactical', description: 'Mục tiêu không được dùng Đánh đến hết lượt.' },
+  { type: 'whirlwind', name: 'Cuốn Bay', emoji: '🌪️', category: 'tactical', description: 'Phá hủy một trang bị của mục tiêu.' },
+  { type: 'bind', name: 'Trói', emoji: '⛓️', category: 'tactical', description: 'Mục tiêu không được trang bị vật phẩm trong lượt kế tiếp.' },
+  { type: 'view', name: 'Xem', emoji: '👀', category: 'tactical', description: 'Xem ngẫu nhiên 2 lá bài trên tay của một người chơi.' },
   { type: 'steal', name: 'Cướp', emoji: '🎯', category: 'tactical', description: 'Lấy 1 lá bài từ tay hoặc trang bị của đối phương.' },
-  { type: 'sword', name: 'Kiếm', emoji: '🗡', category: 'equip', description: 'Trang bị: Tầm đánh +1.' },
-  { type: 'shield', name: 'Khiên', emoji: '🛡', category: 'equip', description: 'Trang bị: Mỗi lượt, giảm 1 sát thương đầu tiên nhận vào.' },
-  { type: 'boots', name: 'Giày', emoji: '👢', category: 'equip', description: 'Trang bị: Có thể Đỡ thêm một lần mỗi lượt.' },
-  { type: 'ring', name: 'Nhẫn', emoji: '💍', category: 'equip', description: 'Trang bị: Lần đầu dùng thẻ Chiến thuật mỗi lượt, rút 1 lá.' },
+  { type: 'dagger', name: 'Dao Găm', emoji: '🔪', category: 'equip', equipSlot: 'weapon', range: 1, description: 'Sau khi gây sát thương, rút 1 lá.' },
+  { type: 'axe', name: 'Rìu', emoji: '🪓', category: 'equip', equipSlot: 'weapon', range: 1, description: 'Nếu Đánh bị Đỡ, bỏ 1 lá để vẫn gây 1 sát thương.' },
+  { type: 'hammer', name: 'Búa', emoji: '⚒️', category: 'equip', equipSlot: 'weapon', range: 1, description: 'Lá Đánh đầu tiên mỗi lượt gây thêm 1 sát thương.' },
+  { type: 'long_sword', name: 'Trường Kiếm', emoji: '⚔️', category: 'equip', equipSlot: 'weapon', range: 2, description: 'Sau khi dùng Đánh, rút 1 lá rồi bỏ 1 lá.' },
+  { type: 'dual_swords', name: 'Song Kiếm', emoji: '🗡️', category: 'equip', equipSlot: 'weapon', range: 2, description: 'Sau khi gây sát thương, xem ngẫu nhiên 1 lá trên tay mục tiêu.' },
+  { type: 'bow', name: 'Cung', emoji: '🏹', category: 'equip', equipSlot: 'weapon', range: 3, description: 'Sau khi gây sát thương, mục tiêu bỏ ngẫu nhiên 1 lá.' },
+  { type: 'dart', name: 'Phi Tiêu', emoji: '🎯', category: 'equip', equipSlot: 'weapon', range: 4, description: 'Lá Đánh đầu tiên mỗi lượt không bị giới hạn bởi tầm đánh.' },
+  { type: 'cannon', name: 'Đại Pháo', emoji: '💣', category: 'equip', equipSlot: 'weapon', range: 5, description: 'Tầm đánh 5.' },
+  { type: 'wooden_shield', name: 'Khiên Gỗ', emoji: '🛡️', category: 'equip', equipSlot: 'armor', description: 'Giảm 1 sát thương đầu tiên nhận mỗi lượt.' },
+  { type: 'stone_armor', name: 'Giáp Đá', emoji: '🪨', category: 'equip', equipSlot: 'armor', description: 'Lần đầu bị Đánh mỗi lượt, rút 1 lá.' },
+  { type: 'water_armor', name: 'Áo Nước', emoji: '🌊', category: 'equip', equipSlot: 'armor', description: 'Có thể dùng Đỡ để chặn Sét.' },
+  { type: 'fire_armor', name: 'Áo Lửa', emoji: '🔥', category: 'equip', equipSlot: 'armor', description: 'Miễn nhiễm với Lửa.' },
+  { type: 'thorn_armor', name: 'Giáp Gai', emoji: '🌿', category: 'equip', equipSlot: 'armor', description: 'Sau khi nhận sát thương từ Đánh, gây lại 1 sát thương cho kẻ tấn công.' },
+  { type: 'cloak', name: 'Áo Choàng', emoji: '👻', category: 'equip', equipSlot: 'armor', description: 'Khoảng cách từ người khác đến bạn +1.' },
+  { type: 'crystal_shield', name: 'Khiên Pha Lê', emoji: '💎', category: 'equip', equipSlot: 'armor', description: 'Sau khi Đỡ thành công, hồi 1 máu.' },
+  { type: 'tower_shield', name: 'Đại Khiên', emoji: '🏰', category: 'equip', equipSlot: 'armor', description: 'Vô hiệu hóa lá Đánh đầu tiên nhắm vào bạn mỗi lượt.' },
+  { type: 'wind_boots', name: 'Giày Gió', emoji: '👢', category: 'equip', equipSlot: 'accessory', description: 'Khoảng cách từ bạn đến người khác -1.' },
+  { type: 'wind_wings', name: 'Cánh Gió', emoji: '🪽', category: 'equip', equipSlot: 'accessory', description: 'Khoảng cách từ người khác đến bạn +1.' },
+  { type: 'compass', name: 'La Bàn', emoji: '🧭', category: 'equip', equipSlot: 'accessory', description: 'Khi tính khoảng cách, có thể bỏ qua 1 người chơi.' },
+  { type: 'mist_screen', name: 'Màn Sương', emoji: '🌫️', category: 'equip', equipSlot: 'accessory', description: 'Người chơi cách bạn từ 3 trở lên không thể chọn bạn làm mục tiêu.' },
+  { type: 'magnet', name: 'Nam Châm', emoji: '🧲', category: 'equip', equipSlot: 'accessory', description: 'Chọn một người, khoảng cách giữa hai người trở thành 1 đến hết lượt.' },
+  { type: 'telescope', name: 'Ống Nhòm', emoji: '🔭', category: 'equip', equipSlot: 'accessory', description: 'Trong lượt của bạn, tầm đánh +2.' },
+  { type: 'iron_anchor', name: 'Neo Sắt', emoji: '⚓', category: 'equip', equipSlot: 'accessory', description: 'Người khác không thể giảm khoảng cách đến bạn bằng kỹ năng hoặc trang bị.' },
   { type: 'connect', name: 'Kết Nối', emoji: '🤝', category: 'teammate', description: 'Chọn một người chơi. Nếu cùng phe, nhận ra nhau.' },
   { type: 'supply', name: 'Tiếp Tế', emoji: '🎁', category: 'teammate', description: 'Đối phương rút 2 lá. Nếu cùng phe, nhận ra nhau.' },
   { type: 'protect', name: 'Che Chở', emoji: '🛡', category: 'teammate', description: 'Gánh sát thương thay cho họ đến đầu lượt sau. Nếu cùng phe, nhận ra nhau.' },
+  { type: 'rescue', name: 'Cứu Viện', emoji: '❤️', category: 'teammate', description: 'Hồi 1 máu. Nếu cùng phe, hai người nhận ra nhau.' },
+  { type: 'resonance', name: 'Cộng Hưởng', emoji: '🌟', category: 'teammate', description: 'Hai người cùng rút 2 lá. Nếu cùng phe, hai người nhận ra nhau.' },
+  { type: 'pact', name: 'Hiệp Ước', emoji: '🕊️', category: 'teammate', description: 'Hai người không thể gây sát thương cho nhau đến đầu lượt sau. Nếu cùng phe, hai người nhận ra nhau.' },
+  { type: 'investigate', name: 'Điều Tra', emoji: '🔍', category: 'teammate', description: 'Xem ngẫu nhiên 2 lá bài trên tay mục tiêu.' },
+  { type: 'track', name: 'Theo Dõi', emoji: '👁️', category: 'teammate', description: 'Nếu mục tiêu gây sát thương trước lượt kế tiếp của bạn, rút 2 lá.' },
+  { type: 'trial', name: 'Thử Lòng', emoji: '🔥', category: 'teammate', description: 'Mục tiêu phải lật nhân vật hoặc nhận 1 sát thương.' },
+  { type: 'provoke', name: 'Khiêu Khích', emoji: '⚔️', category: 'teammate', description: 'Mục tiêu phải lật nhân vật hoặc bỏ 2 lá bài.' },
+  { type: 'expose', name: 'Vạch Mặt', emoji: '🎭', category: 'teammate', description: 'Nếu mục tiêu còn 2 máu hoặc ít hơn, họ phải lật nhân vật.' },
 ];
 
 // Generates a 6-letter room code
@@ -144,6 +205,7 @@ function getSanitizedRoom(room: ServerRoom, playerId: string) {
       duelTurnPlayerId: room.activeAction.duelTurnPlayerId,
       dyingPlayerId: room.activeAction.dyingPlayerId,
       viewedCard: (room.activeAction.targetPlayerId === playerId || room.activeAction.sourcePlayerId === playerId) ? room.activeAction.viewedCard : undefined,
+      viewedCards: room.activeAction.sourcePlayerId === playerId ? room.activeAction.viewedCards : undefined,
     } : null,
     winnerKingdom: room.winnerKingdom,
     players: room.players.map((p) => {
@@ -174,6 +236,7 @@ function getSanitizedRoom(room: ServerRoom, playerId: string) {
         revealedTeammates: isSelf ? p.revealedTeammates : [],
         strikePlayedThisTurn: p.strikePlayedThisTurn,
         dodgesUsedThisTurn: p.dodgesUsedThisTurn,
+        magnetTargetId: isSelf ? p.magnetTargetId : null,
       };
     })
   };
@@ -183,24 +246,58 @@ function getSanitizedRoom(room: ServerRoom, playerId: string) {
 function generateDeck() {
   const deck: Card[] = [];
   const distribution = {
-    strike: 25,
-    dodge: 18,
-    heal: 12,
-    fire: 5,
-    lightning: 5,
-    duel: 4,
+    strike: 32,
+    dodge: 16,
+    heal: 8,
+    fire: 4,
+    lightning: 4,
+    duel: 3,
+    explosion: 3,
+    assassinate: 2,
+    pursuit: 2,
+    lock: 3,
+    stun: 3,
+    freeze: 3,
+    whirlwind: 3,
+    bind: 2,
     draw: 4,
     exchange: 3,
-    lock: 3,
-    view: 3,
-    steal: 4,
-    sword: 3,
-    shield: 3,
-    boots: 2,
-    ring: 2,
+    steal: 3,
+    view: 2,
+    dagger: 2,
+    axe: 2,
+    hammer: 2,
+    long_sword: 2,
+    dual_swords: 1,
+    bow: 1,
+    dart: 1,
+    cannon: 1,
+    wooden_shield: 2,
+    stone_armor: 1,
+    water_armor: 1,
+    fire_armor: 1,
+    thorn_armor: 1,
+    cloak: 1,
+    crystal_shield: 1,
+    tower_shield: 1,
+    wind_boots: 1,
+    wind_wings: 1,
+    compass: 1,
+    mist_screen: 1,
+    magnet: 1,
+    telescope: 1,
+    iron_anchor: 1,
     connect: 3,
     supply: 3,
     protect: 3,
+    rescue: 2,
+    resonance: 2,
+    pact: 2,
+    investigate: 2,
+    track: 2,
+    trial: 2,
+    provoke: 2,
+    expose: 1,
   };
 
   Object.entries(distribution).forEach(([type, count]) => {
@@ -282,6 +379,13 @@ function assignFactionsAndHeroes(players: ServerPlayer[]) {
     p.strikePlayedThisTurn = 0;
     p.dodgesUsedThisTurn = 0;
     p.hasTacticalFirstPlayed = false;
+    p.isStunned = false;
+    p.isFrozen = false;
+    p.isBoundNextTurn = false;
+    p.isEquipBlocked = false;
+    p.stoneArmorTriggered = false;
+    p.towerShieldTriggered = false;
+    p.magnetTargetId = null;
   });
 }
 
@@ -322,23 +426,68 @@ function drawCards(room: ServerRoom, player: ServerPlayer, count: number): Card[
   return drawn;
 }
 
+function revealHero(room: ServerRoom, player: ServerPlayer) {
+  if (player.isRevealed || player.isEliminated) return false;
+  player.isRevealed = true;
+  drawCards(room, player, 1);
+  return true;
+}
+
+function hasEquipment(player: ServerPlayer, type: CardType) {
+  return player.equipments.some(equipment => equipment.type === type);
+}
+
+function calculateDistance(room: ServerRoom, source: ServerPlayer, target: ServerPlayer) {
+  const sourceIndex = room.players.findIndex(player => player.id === source.id);
+  const targetIndex = room.players.findIndex(player => player.id === target.id);
+  let distance = Math.min(
+    Math.abs(sourceIndex - targetIndex),
+    room.players.length - Math.abs(sourceIndex - targetIndex),
+  );
+
+  const anchored = hasEquipment(target, 'iron_anchor');
+  if (!anchored && source.magnetTargetId === target.id) return 1;
+  if (!anchored && hasEquipment(source, 'wind_boots')) distance -= 1;
+  if (!anchored && hasEquipment(source, 'compass')) distance -= 1;
+  if (hasEquipment(target, 'wind_wings')) distance += 1;
+  if (hasEquipment(target, 'cloak')) distance += 1;
+  return Math.max(1, distance);
+}
+
+function canChooseTarget(room: ServerRoom, source: ServerPlayer, target: ServerPlayer) {
+  return !(hasEquipment(target, 'mist_screen') && calculateDistance(room, source, target) >= 3);
+}
+
 // Deal damage core logic
-function dealDamage(room: ServerRoom, targetId: string, amount: number, sourceId: string) {
+function dealDamage(room: ServerRoom, targetId: string, amount: number, sourceId: string, kind: DamageKind = 'other') {
   const target = room.players.find(p => p.id === targetId);
   if (!target || target.isEliminated) return;
+
+  const hasPact = room.pacts.some(pact =>
+    pact.playerIds.includes(targetId) && pact.playerIds.includes(sourceId)
+  );
+  if (hasPact) {
+    addSystemLog(room.code, `🕊️ Hiệp Ước ngăn sát thương giữa hai người chơi.`);
+    return;
+  }
 
   // 1. Protection Check (Che Chở)
   if (target.protectedByPlayerId) {
     const protector = room.players.find(p => p.id === target.protectedByPlayerId && !p.isEliminated);
     if (protector) {
       addSystemLog(room.code, `${protector.name} xả thân gánh chịu ${amount} sát thương thay cho ${target.name} (Che Chở)!`);
-      dealDamage(room, protector.id, amount, sourceId);
+      dealDamage(room, protector.id, amount, sourceId, kind);
       return;
     }
   }
 
+  if (kind === 'fire' && hasEquipment(target, 'fire_armor')) {
+    addSystemLog(room.code, `🔥 Áo Lửa giúp ${target.name} miễn nhiễm sát thương từ Lửa.`);
+    return;
+  }
+
   // 2. Shield (Khiên) armor check
-  const hasShield = target.equipments.some(e => e.type === 'shield');
+  const hasShield = hasEquipment(target, 'wooden_shield');
   if (hasShield && target.shieldFirstBlockActive) {
     target.shieldFirstBlockActive = false;
     amount = Math.max(0, amount - 1);
@@ -363,6 +512,40 @@ function dealDamage(room: ServerRoom, targetId: string, amount: number, sourceId
   if (target.isRevealed && target.hero === 'Coral' && !target.isLocked) {
     drawCards(room, target, 1);
     addSystemLog(room.code, `Kỹ năng [Coral]: ${target.name} rút 1 lá sau khi nhận sát thương.`);
+  }
+
+  const source = room.players.find(player => player.id === sourceId && !player.isEliminated);
+  if (source && kind === 'strike') {
+    if (hasEquipment(source, 'dagger')) {
+      drawCards(room, source, 1);
+      addSystemLog(room.code, `🔪 Dao Găm giúp ${source.name} rút 1 lá sau khi gây sát thương.`);
+    }
+    if (hasEquipment(source, 'dual_swords') && target.cards.length > 0) {
+      const viewed = target.cards[Math.floor(Math.random() * target.cards.length)];
+      addPrivateLog(room, [source.id], `🗡️ Song Kiếm nhìn thấy [${viewed.name}] trên tay ${target.name}.`);
+    }
+    if (hasEquipment(source, 'bow') && target.cards.length > 0) {
+      const discarded = target.cards.splice(Math.floor(Math.random() * target.cards.length), 1)[0];
+      room.discardPile.push(discarded);
+      addSystemLog(room.code, `🏹 Cung khiến ${target.name} bỏ ngẫu nhiên 1 lá.`);
+    }
+  }
+
+  const triggeredTrackers = room.trackers.filter(tracker => tracker.targetId === sourceId);
+  triggeredTrackers.forEach(tracker => {
+    const trackingPlayer = room.players.find(player => player.id === tracker.trackerId && !player.isEliminated);
+    if (trackingPlayer) {
+      drawCards(room, trackingPlayer, 2);
+      addPrivateLog(room, [trackingPlayer.id], `👁️ Theo Dõi kích hoạt: bạn rút 2 lá.`);
+    }
+  });
+  if (triggeredTrackers.length > 0) {
+    room.trackers = room.trackers.filter(tracker => tracker.targetId !== sourceId);
+  }
+
+  if (source && kind === 'strike' && hasEquipment(target, 'thorn_armor')) {
+    addSystemLog(room.code, `🌿 Giáp Gai của ${target.name} phản lại 1 sát thương cho ${source.name}.`);
+    room.pendingDamages.unshift({ targetId: source.id, amount: 1, sourceId: target.id, kind: 'other' });
   }
 
   // Dying state trigger
@@ -450,11 +633,22 @@ function startTurn(room: ServerRoom, playerId: string) {
   const p = room.players.find(pl => pl.id === playerId);
   if (!p) return;
 
+  room.pacts = room.pacts.filter(pact => pact.expiresOnPlayerId !== playerId);
+  room.trackers = room.trackers.filter(tracker => tracker.trackerId !== playerId);
+  const skipDraw = Boolean(p.isStunned);
+  p.isStunned = false;
+  p.isEquipBlocked = Boolean(p.isBoundNextTurn);
+  p.isBoundNextTurn = false;
+
   room.players.forEach((player) => {
     player.shieldFirstBlockActive = true;
     player.blazeFirstDmgActive = true;
     player.dodgesUsedThisTurn = 0;
     player.isLocked = false;
+    player.isFrozen = false;
+    player.stoneArmorTriggered = false;
+    player.towerShieldTriggered = false;
+    player.magnetTargetId = null;
   });
 
   p.strikePlayedThisTurn = 0;
@@ -479,18 +673,23 @@ function startTurn(room: ServerRoom, playerId: string) {
 
   // Flora skill trigger
   let drawCount = 2;
-  if (p.isRevealed && p.hero === 'Flora' && !p.isLocked) {
+  if (!skipDraw && p.isRevealed && p.hero === 'Flora' && !p.isLocked) {
     drawCount = 3;
     addSystemLog(room.code, `Kỹ năng [Flora]: ${p.name} rút 3 lá bài.`);
   }
 
-  drawCards(room, p, drawCount);
+  if (skipDraw) {
+    addSystemLog(room.code, `😵 ${p.name} bị Choáng và bỏ qua giai đoạn rút bài.`);
+  } else {
+    drawCards(room, p, drawCount);
+  }
   room.turnPhase = 'action';
 }
 
 function advanceTurn(room: ServerRoom) {
   room.activeAction = null;
   room.pendingActions = [];
+  room.pendingDamages = [];
   const alivePlayers = room.players.filter(p => !p.isEliminated);
   if (alivePlayers.length === 0) return;
 
@@ -547,7 +746,30 @@ function getNextAction(room: ServerRoom, completedAction: ServerActiveAction): S
 }
 
 function resumePendingAction(room: ServerRoom) {
-  room.activeAction = room.pendingActions.pop() || null;
+  const pendingDamage = room.pendingDamages.shift();
+  if (pendingDamage) {
+    dealDamage(room, pendingDamage.targetId, pendingDamage.amount, pendingDamage.sourceId, pendingDamage.kind);
+    if (room.activeAction?.type !== 'waiting_for_dying_heal') resumePendingAction(room);
+    return;
+  }
+  room.activeAction = null;
+  while (room.pendingActions.length > 0) {
+    const candidate = room.pendingActions.pop()!;
+    const sourceAlive = room.players.some(player => player.id === candidate.sourcePlayerId && !player.isEliminated);
+    const targetAlive = room.players.some(player => player.id === candidate.targetPlayerId && !player.isEliminated);
+    if (sourceAlive && targetAlive) {
+      room.activeAction = candidate;
+      break;
+    }
+  }
+}
+
+function dealDamageSequence(room: ServerRoom, damages: PendingDamage[]) {
+  if (damages.length === 0) return;
+  const [first, ...remaining] = damages;
+  room.pendingDamages.unshift(...remaining);
+  dealDamage(room, first.targetId, first.amount, first.sourceId, first.kind);
+  if (room.activeAction?.type !== 'waiting_for_dying_heal') resumePendingAction(room);
 }
 
 function finishResolvedAction(room: ServerRoom, completedAction: ServerActiveAction) {
@@ -565,15 +787,15 @@ function dealActionDamage(
   targetId: string,
   amount: number,
   sourceId: string,
+  kind: DamageKind = 'other',
 ) {
   const nextAction = getNextAction(room, completedAction);
-  dealDamage(room, targetId, amount, sourceId);
+  dealDamage(room, targetId, amount, sourceId, kind);
 
   if (room.activeAction?.type === 'waiting_for_dying_heal') {
     if (nextAction) room.pendingActions.push(nextAction);
-  } else if (nextAction) {
-    room.activeAction = nextAction;
   } else {
+    if (nextAction) room.pendingActions.push(nextAction);
     resumePendingAction(room);
   }
 }
@@ -679,6 +901,9 @@ wss.on('connection', (ws) => {
             discardPileCount: 0,
             activeAction: null,
             pendingActions: [],
+            pendingDamages: [],
+            pacts: [],
+            trackers: [],
             privateLogs: { [newPlayer.id]: [] },
             winnerKingdom: null,
             deck: [],
@@ -807,6 +1032,9 @@ wss.on('connection', (ws) => {
           room.winnerKingdom = null;
           room.activeAction = null;
           room.pendingActions = [];
+          room.pendingDamages = [];
+          room.pacts = [];
+          room.trackers = [];
           room.systemLogs = [];
           room.privateLogs = Object.fromEntries(room.players.map(roomPlayer => [roomPlayer.id, []]));
 
@@ -842,11 +1070,9 @@ wss.on('connection', (ws) => {
           const player = room.players.find(p => p.id === meta.playerId);
           if (player && !player.isRevealed && !player.isEliminated &&
             room.turnPlayerId === player.id && room.turnPhase === 'action' && !room.activeAction) {
-            player.isRevealed = true;
+            revealHero(room, player);
             addSystemLog(meta.roomCode, `📢 ${player.name} đã LẬT NHÂN VẬT! [${player.kingdom?.toUpperCase()}] - Anh hùng: [${player.hero}]. HP: ${player.hp}/${player.maxHp}`);
 
-            // Draw 1 card immediately upon reveal
-            drawCards(room, player, 1);
             broadcastToRoom(meta.roomCode);
           }
           break;
@@ -873,6 +1099,11 @@ wss.on('connection', (ws) => {
           const card = player.cards[cardIndex];
           const target = room.players.find(p => p.id === targetPlayerId);
 
+          if (target && target.id !== player.id && !canChooseTarget(room, player, target)) {
+            ws.send(JSON.stringify({ type: 'ERROR', message: `Màn Sương khiến ${target.name} không thể bị chọn từ khoảng cách này.` }));
+            return;
+          }
+
           // Card type usage validation
           if (card.type === 'strike') {
             if (!target || target.isEliminated || target.id === player.id) {
@@ -886,23 +1117,25 @@ wss.on('connection', (ws) => {
               return;
             }
 
+            if (player.isFrozen) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Bạn đang bị Đóng Băng và không thể dùng Đánh trong lượt này.' }));
+              return;
+            }
+
             // Check Bolt skill for range check:
             // "Lá Đánh đầu tiên mỗi lượt không giới hạn tầm."
             const isFirstStrike = player.strikePlayedThisTurn === 0;
-            const hasInfiniteRange = player.isRevealed && player.hero === 'Bolt' && !player.isLocked && isFirstStrike;
+            const hasDart = player.equipments.some(e => e.type === 'dart');
+            const hasInfiniteRange = isFirstStrike &&
+              ((player.isRevealed && player.hero === 'Bolt' && !player.isLocked) || hasDart);
 
             if (!hasInfiniteRange) {
-              // Standard range calculation: default range = 1, Sword equip adds 1
-              const hasSword = player.equipments.some(e => e.type === 'sword');
-              const maxRange = hasSword ? 2 : 1;
+              const weapon = player.equipments.find(e => e.equipSlot === 'weapon');
+              const telescopeBonus = player.equipments.some(e => e.type === 'telescope') ? 2 : 0;
+              const maxRange = (weapon?.range || 1) + telescopeBonus;
 
               // Simple range check by player array distance
-              const playerIdx = room.players.findIndex(p => p.id === player.id);
-              const targetIdx = room.players.findIndex(p => p.id === target.id);
-              const distance = Math.min(
-                Math.abs(playerIdx - targetIdx),
-                room.players.length - Math.abs(playerIdx - targetIdx)
-              );
+              const distance = calculateDistance(room, player, target);
 
               if (distance > maxRange) {
                 ws.send(JSON.stringify({ type: 'ERROR', message: 'Đối phương ngoài tầm đánh của bạn. Trang bị Kiếm để tăng tầm!' }));
@@ -923,15 +1156,54 @@ wss.on('connection', (ws) => {
               addSystemLog(meta.roomCode, `Kỹ năng [Ember]: ${player.name} rút 1 lá sau khi Đánh.`);
             }
 
+            let needsLongSwordDiscard = hasEquipment(player, 'long_sword');
+            if (needsLongSwordDiscard) {
+              drawCards(room, player, 1);
+              needsLongSwordDiscard = player.cards.length > 0;
+              addSystemLog(meta.roomCode, `⚔️ Trường Kiếm: ${player.name} rút 1 lá và phải chọn bỏ 1 lá.`);
+            }
+
+            if (hasEquipment(target, 'stone_armor') && !target.stoneArmorTriggered) {
+              target.stoneArmorTriggered = true;
+              drawCards(room, target, 1);
+              addSystemLog(meta.roomCode, `🪨 Giáp Đá giúp ${target.name} rút 1 lá.`);
+            }
+
+            if (hasEquipment(target, 'tower_shield') && !target.towerShieldTriggered) {
+              target.towerShieldTriggered = true;
+              addSystemLog(meta.roomCode, `🏰 Đại Khiên vô hiệu hóa lá Đánh đầu tiên nhắm vào ${target.name}.`);
+              if (needsLongSwordDiscard) {
+                room.activeAction = {
+                  id: `long_sword_${Math.random().toString(36).substring(2, 9)}`,
+                  type: 'waiting_for_long_sword_discard', card,
+                  sourcePlayerId: player.id, targetPlayerId: target.id, pendingDamage: 0,
+                };
+              }
+              broadcastToRoom(meta.roomCode);
+              break;
+            }
+
+            const strikeDamage = hasEquipment(player, 'hammer') && isFirstStrike ? 2 : 1;
+
             // Set waiting for dodge action state
-            room.activeAction = {
+            const strikeAction: ServerActiveAction = {
               id: `act_${Math.random().toString(36).substring(2, 9)}`,
               type: 'waiting_for_dodge',
               card,
               sourcePlayerId: player.id,
               targetPlayerId: target.id,
-              pendingDamage: 1
+              pendingDamage: strikeDamage
             };
+            if (needsLongSwordDiscard) {
+              room.pendingActions.push(strikeAction);
+              room.activeAction = {
+                id: `long_sword_${Math.random().toString(36).substring(2, 9)}`,
+                type: 'waiting_for_long_sword_discard', card,
+                sourcePlayerId: player.id, targetPlayerId: target.id, pendingDamage: 0,
+              };
+            } else {
+              room.activeAction = strikeAction;
+            }
           }
 
           else if (card.type === 'dodge') {
@@ -974,7 +1246,9 @@ wss.on('connection', (ws) => {
             handleTacticalPlayExtras(room, player);
 
             // Get targets sequentially (all other living players)
-            const otherLiving = room.players.filter(p => !p.isEliminated && p.id !== player.id);
+            const otherLiving = room.players.filter(p =>
+              !p.isEliminated && p.id !== player.id && !hasEquipment(p, 'fire_armor')
+            );
             if (otherLiving.length > 0) {
               room.activeAction = {
                 id: `fire_${Math.random().toString(36).substring(2, 9)}`,
@@ -1000,8 +1274,18 @@ wss.on('connection', (ws) => {
             addSystemLog(meta.roomCode, `⚡ ${player.name} giáng SÉT tàn khốc lên ${target.name}!`);
             handleTacticalPlayExtras(room, player);
 
-            // Deal 1 damage directly (cannot be standard-dodged unless special shield blocks it)
-            dealDamage(room, target.id, 1, player.id);
+            if (hasEquipment(target, 'water_armor')) {
+              room.activeAction = {
+                id: `lightning_${Math.random().toString(36).substring(2, 9)}`,
+                type: 'waiting_for_dodge',
+                card,
+                sourcePlayerId: player.id,
+                targetPlayerId: target.id,
+                pendingDamage: 1,
+              };
+            } else {
+              dealDamage(room, target.id, 1, player.id, 'lightning');
+            }
             checkVictoryConditions(room);
           }
 
@@ -1026,6 +1310,42 @@ wss.on('connection', (ws) => {
               pendingDamage: 1,
               duelTurnPlayerId: target.id
             };
+          }
+
+          else if (card.type === 'explosion') {
+            if (!target || target.isEliminated || target.id === player.id) return;
+            player.cards.splice(cardIndex, 1);
+            room.discardPile.push(card);
+            handleTacticalPlayExtras(room, player);
+
+            const targetIndex = room.players.findIndex(roomPlayer => roomPlayer.id === target.id);
+            const affectedIndexes = [
+              (targetIndex - 1 + room.players.length) % room.players.length,
+              targetIndex,
+              (targetIndex + 1) % room.players.length,
+            ];
+            const affected = [...new Set(affectedIndexes)]
+              .map(index => room.players[index])
+              .filter(affectedPlayer => !affectedPlayer.isEliminated && affectedPlayer.id !== player.id);
+            addSystemLog(meta.roomCode, `💥 ${player.name} gây Nổ tại vị trí của ${target.name}.`);
+            dealDamageSequence(room, affected.map(affectedPlayer => ({
+              targetId: affectedPlayer.id,
+              amount: 1,
+              sourceId: player.id,
+              kind: 'tactical' as DamageKind,
+            })));
+            checkVictoryConditions(room);
+          }
+
+          else if (card.type === 'assassinate' || card.type === 'pursuit') {
+            if (!target || target.isEliminated || target.id === player.id) return;
+            player.cards.splice(cardIndex, 1);
+            room.discardPile.push(card);
+            handleTacticalPlayExtras(room, player);
+            const damage = card.type === 'pursuit' && target.hp < target.maxHp ? 2 : 1;
+            addSystemLog(meta.roomCode, `${card.emoji} ${player.name} dùng ${card.name} lên ${target.name}.`);
+            dealDamage(room, target.id, damage, player.id, 'tactical');
+            checkVictoryConditions(room);
           }
 
           else if (card.type === 'draw') {
@@ -1081,6 +1401,32 @@ wss.on('connection', (ws) => {
             target.isLocked = true;
           }
 
+          else if (card.type === 'stun' || card.type === 'freeze' || card.type === 'bind') {
+            if (!target || target.isEliminated || target.id === player.id) return;
+            player.cards.splice(cardIndex, 1);
+            room.discardPile.push(card);
+            handleTacticalPlayExtras(room, player);
+            if (card.type === 'stun') target.isStunned = true;
+            if (card.type === 'freeze') target.isFrozen = true;
+            if (card.type === 'bind') target.isBoundNextTurn = true;
+            addSystemLog(meta.roomCode, `${card.emoji} ${player.name} dùng ${card.name} lên ${target.name}.`);
+          }
+
+          else if (card.type === 'whirlwind') {
+            if (!target || target.isEliminated || target.id === player.id || target.equipments.length === 0) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Mục tiêu không có trang bị để Cuốn Bay.' }));
+              return;
+            }
+            player.cards.splice(cardIndex, 1);
+            room.discardPile.push(card);
+            handleTacticalPlayExtras(room, player);
+            room.activeAction = {
+              id: `destroy_${Math.random().toString(36).substring(2, 9)}`,
+              type: 'select_destroy_equipment', card,
+              sourcePlayerId: player.id, targetPlayerId: target.id, pendingDamage: 0,
+            };
+          }
+
           else if (card.type === 'view') {
             if (!target || target.isEliminated || target.id === player.id) {
               ws.send(JSON.stringify({ type: 'ERROR', message: 'Chọn mục tiêu để Xem tay.' }));
@@ -1094,7 +1440,7 @@ wss.on('connection', (ws) => {
             handleTacticalPlayExtras(room, player);
 
             if (target.cards.length > 0) {
-              const randCard = target.cards[Math.floor(Math.random() * target.cards.length)];
+              const viewedCards = [...target.cards].sort(() => Math.random() - 0.5).slice(0, 2);
               room.activeAction = {
                 id: `view_${Math.random().toString(36).substring(2, 9)}`,
                 type: 'view_hand_result',
@@ -1102,7 +1448,12 @@ wss.on('connection', (ws) => {
                 sourcePlayerId: player.id,
                 targetPlayerId: target.id,
                 pendingDamage: 0,
-                viewedCard: randCard
+                viewedCard: viewedCards[0] ? {
+                  ...viewedCards[0],
+                  name: viewedCards.map(viewed => viewed.name).join(' • '),
+                  emoji: viewedCards.map(viewed => viewed.emoji).join(' '),
+                } : undefined,
+                viewedCards,
               };
             } else {
               addSystemLog(meta.roomCode, `${target.name} không có bài trên tay để xem.`);
@@ -1139,17 +1490,27 @@ wss.on('connection', (ws) => {
           }
 
           else if (card.category === 'equip') {
-            // Equip weapon/armor/boots/ring
+            if (player.isEquipBlocked) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Bạn đang bị Trói và không thể trang bị trong lượt này.' }));
+              return;
+            }
+            if (card.type === 'magnet' && (!target || target.isEliminated || target.id === player.id)) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Hãy chọn mục tiêu cho Nam Châm.' }));
+              return;
+            }
+            // Equip one item per slot: weapon, armor, or accessory.
             player.cards.splice(cardIndex, 1);
 
-            // Replace existing equipment of same category
-            const existingIdx = player.equipments.findIndex(e => e.type === card.type);
+            const existingIdx = player.equipments.findIndex(e =>
+              card.equipSlot ? e.equipSlot === card.equipSlot : e.type === card.type
+            );
             if (existingIdx !== -1) {
               room.discardPile.push(player.equipments[existingIdx]);
               player.equipments.splice(existingIdx, 1);
             }
 
             player.equipments.push(card);
+            if (card.type === 'magnet' && target) player.magnetTargetId = target.id;
             addSystemLog(meta.roomCode, `🛡️ ${player.name} trang bị thành công [${card.name}].`);
           }
 
@@ -1165,8 +1526,9 @@ wss.on('connection', (ws) => {
             addSystemLog(meta.roomCode, `🤝 ${player.name} sử dụng liên kết đồng đội [${card.name}] lên ${target.name}.`);
 
             const isSameFaction = player.kingdom === target.kingdom;
+            const identifiesFaction = ['connect', 'supply', 'protect', 'rescue', 'resonance', 'pact'].includes(card.type);
 
-            if (isSameFaction) {
+            if (identifiesFaction && isSameFaction) {
               if (!player.revealedTeammates.includes(target.id)) {
                 player.revealedTeammates.push(target.id);
               }
@@ -1174,7 +1536,7 @@ wss.on('connection', (ws) => {
                 target.revealedTeammates.push(player.id);
               }
               addPrivateLog(room, [player.id, target.id], `✨ ${player.name} và ${target.name} đã nhận ra nhau là đồng đội cùng phe!`);
-            } else {
+            } else if (identifiesFaction) {
               addPrivateLog(room, [player.id, target.id], `Không có phản ứng đồng đội: ${player.name} và ${target.name} thuộc các phe khác nhau.`);
             }
 
@@ -1185,6 +1547,55 @@ wss.on('connection', (ws) => {
               target.protectedByPlayerId = player.id;
               player.protectingPlayerId = target.id;
               addSystemLog(meta.roomCode, `🛡️ ${player.name} sẽ Che Chở, gánh chịu toàn bộ sát thương thay ${target.name} cho tới đầu lượt sau.`);
+            } else if (card.type === 'rescue') {
+              target.hp = Math.min(target.maxHp, target.hp + 1);
+              addSystemLog(meta.roomCode, `❤️ ${player.name} Cứu Viện, hồi 1 máu cho ${target.name}.`);
+              if (player.isRevealed && player.hero === 'Aqua' && !player.isLocked) {
+                drawCards(room, player, 1);
+                addSystemLog(meta.roomCode, `Kỹ năng Aqua giúp ${player.name} rút 1 lá.`);
+              }
+            } else if (card.type === 'resonance') {
+              drawCards(room, player, 2);
+              drawCards(room, target, 2);
+              addSystemLog(meta.roomCode, `🌟 ${player.name} và ${target.name} cùng rút 2 lá nhờ Cộng Hưởng.`);
+            } else if (card.type === 'pact') {
+              room.pacts.push({ playerIds: [player.id, target.id], expiresOnPlayerId: player.id });
+              addSystemLog(meta.roomCode, `🕊️ ${player.name} lập Hiệp Ước với ${target.name} đến đầu lượt sau.`);
+            } else if (card.type === 'investigate') {
+              const viewedCards = [...target.cards].sort(() => Math.random() - 0.5).slice(0, 2);
+              room.activeAction = {
+                id: `investigate_${Math.random().toString(36).substring(2, 9)}`,
+                type: 'view_hand_result',
+                card,
+                sourcePlayerId: player.id,
+                targetPlayerId: target.id,
+                pendingDamage: 0,
+                viewedCard: viewedCards[0] ? {
+                  ...viewedCards[0],
+                  name: viewedCards.map(viewed => viewed.name).join(' • '),
+                  emoji: viewedCards.map(viewed => viewed.emoji).join(' '),
+                } : undefined,
+                viewedCards,
+              };
+            } else if (card.type === 'track') {
+              room.trackers = room.trackers.filter(tracker => tracker.trackerId !== player.id);
+              room.trackers.push({ trackerId: player.id, targetId: target.id });
+              addSystemLog(meta.roomCode, `👁️ ${player.name} bắt đầu Theo Dõi ${target.name}.`);
+            } else if (card.type === 'trial' && !target.isRevealed) {
+              room.activeAction = {
+                id: `trial_${Math.random().toString(36).substring(2, 9)}`,
+                type: 'waiting_for_trial_choice', card,
+                sourcePlayerId: player.id, targetPlayerId: target.id, pendingDamage: 1,
+              };
+            } else if (card.type === 'provoke' && !target.isRevealed) {
+              room.activeAction = {
+                id: `provoke_${Math.random().toString(36).substring(2, 9)}`,
+                type: 'waiting_for_provoke_choice', card,
+                sourcePlayerId: player.id, targetPlayerId: target.id, pendingDamage: 0,
+              };
+            } else if (card.type === 'expose' && target.hp <= 2 && !target.isRevealed) {
+              revealHero(room, target);
+              addSystemLog(meta.roomCode, `🎭 ${target.name} bị Vạch Mặt và buộc phải lật nhân vật.`);
             }
           }
 
@@ -1202,7 +1613,7 @@ wss.on('connection', (ws) => {
           const player = room.players.find(p => p.id === meta.playerId);
           if (!player || player.isEliminated) return;
 
-          const { action, cardId } = data.payload;
+          const { action, cardId, cardIds } = data.payload;
 
           if (room.activeAction.type === 'waiting_for_dodge') {
             if (player.id !== room.activeAction.targetPlayerId) return;
@@ -1212,13 +1623,6 @@ wss.on('connection', (ws) => {
               const cardIdx = player.cards.findIndex(c => c.id === cardId && c.type === 'dodge');
               if (cardIdx === -1) return;
 
-              const hasBoots = player.equipments.some(equipment => equipment.type === 'boots');
-              const dodgeLimit = hasBoots ? 2 : 1;
-              if (player.dodgesUsedThisTurn >= dodgeLimit) {
-                ws.send(JSON.stringify({ type: 'ERROR', message: `Bạn chỉ có thể dùng Đỡ ${dodgeLimit} lần trong lượt này.` }));
-                return;
-              }
-
               const dodgeCard = player.cards[cardIdx];
               player.cards.splice(cardIdx, 1);
               room.discardPile.push(dodgeCard);
@@ -1226,29 +1630,50 @@ wss.on('connection', (ws) => {
 
               addSystemLog(meta.roomCode, `🛡️ ${player.name} dùng ĐỠ né tránh đòn tấn công thành công.`);
 
+              if (hasEquipment(player, 'crystal_shield')) {
+                player.hp = Math.min(player.maxHp, player.hp + 1);
+                addSystemLog(meta.roomCode, `💎 Khiên Pha Lê hồi 1 máu cho ${player.name}.`);
+              }
+
               // Volt skill trigger: "Sau khi dùng Đỡ thành công, có thể dùng ngay 1 lá Đánh."
               const attacker = room.players.find(a => a.id === completedAction.sourcePlayerId && !a.isEliminated);
+              const nextAction = getNextAction(room, completedAction);
+              if (nextAction) room.pendingActions.push(nextAction);
               const canVoltStrike = player.isRevealed && player.hero === 'Volt' && !player.isLocked &&
-                attacker && player.cards.some(card => card.type === 'strike');
+                !player.isFrozen && attacker && player.cards.some(card => card.type === 'strike');
               if (canVoltStrike && attacker) {
-                const nextAction = getNextAction(room, completedAction);
-                if (nextAction) room.pendingActions.push(nextAction);
-                room.activeAction = {
+                room.pendingActions.push({
                   id: `volt_${Math.random().toString(36).substring(2, 9)}`,
                   type: 'waiting_for_volt_strike',
                   card: dodgeCard,
                   sourcePlayerId: player.id,
                   targetPlayerId: attacker.id,
                   pendingDamage: 0,
-                };
+                });
                 addSystemLog(meta.roomCode, `⚡ Kỹ năng [Volt]: ${player.name} có thể dùng ngay 1 lá Đánh phản công ${attacker.name}.`);
+              }
+
+              const canUseAxe = completedAction.card.type === 'strike' && attacker &&
+                hasEquipment(attacker, 'axe') && attacker.cards.length > 0;
+              if (canUseAxe && attacker) {
+                room.activeAction = {
+                  id: `axe_${Math.random().toString(36).substring(2, 9)}`,
+                  type: 'waiting_for_axe_discard',
+                  card: completedAction.card,
+                  sourcePlayerId: attacker.id,
+                  targetPlayerId: player.id,
+                  pendingDamage: 1,
+                };
               } else {
-                finishResolvedAction(room, completedAction);
+                resumePendingAction(room);
               }
             } else {
               // Failed or decided to take damage
               addSystemLog(meta.roomCode, `💔 ${player.name} không thể Đỡ đòn tấn công.`);
-              dealActionDamage(room, completedAction, player.id, completedAction.pendingDamage, completedAction.sourcePlayerId);
+              const kind: DamageKind = completedAction.card.type === 'strike'
+                ? 'strike'
+                : completedAction.card.type === 'fire' ? 'fire' : 'lightning';
+              dealActionDamage(room, completedAction, player.id, completedAction.pendingDamage, completedAction.sourcePlayerId, kind);
             }
           }
 
@@ -1257,6 +1682,10 @@ wss.on('connection', (ws) => {
             if (player.id !== expectedPlayerId) return;
 
             if (action === 'strike') {
+              if (player.isFrozen) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: 'Bạn đang bị Đóng Băng và không thể dùng Đánh.' }));
+                return;
+              }
               const cardIdx = player.cards.findIndex(c => c.id === cardId && c.type === 'strike');
               if (cardIdx === -1) return;
 
@@ -1307,6 +1736,62 @@ wss.on('connection', (ws) => {
             }
           }
 
+          else if (room.activeAction.type === 'waiting_for_axe_discard') {
+            if (player.id !== room.activeAction.sourcePlayerId) return;
+            const axeAction = room.activeAction;
+            if (action === 'discard') {
+              const discardIndex = cardId
+                ? player.cards.findIndex(card => card.id === cardId)
+                : (player.cards.length > 0 ? 0 : -1);
+              if (discardIndex === -1) return;
+              room.discardPile.push(player.cards.splice(discardIndex, 1)[0]);
+              addSystemLog(meta.roomCode, `🪓 ${player.name} bỏ 1 lá để Rìu vẫn gây sát thương.`);
+              dealDamage(room, axeAction.targetPlayerId, 1, player.id, 'strike');
+              if ((room.activeAction as ServerActiveAction | null)?.type !== 'waiting_for_dying_heal') resumePendingAction(room);
+            } else {
+              resumePendingAction(room);
+            }
+          }
+
+          else if (room.activeAction.type === 'waiting_for_long_sword_discard') {
+            if (player.id !== room.activeAction.sourcePlayerId) return;
+            const discardIndex = player.cards.findIndex(card => card.id === cardId);
+            if (action !== 'discard' || discardIndex === -1) return;
+            room.discardPile.push(player.cards.splice(discardIndex, 1)[0]);
+            addSystemLog(meta.roomCode, `⚔️ ${player.name} hoàn tất hiệu ứng Trường Kiếm và bỏ 1 lá.`);
+            resumePendingAction(room);
+          }
+
+          else if (room.activeAction.type === 'waiting_for_trial_choice') {
+            if (player.id !== room.activeAction.targetPlayerId) return;
+            const trialAction = room.activeAction;
+            if (action === 'reveal') {
+              revealHero(room, player);
+              addSystemLog(meta.roomCode, `🔥 ${player.name} chọn lật nhân vật trước Thử Lòng.`);
+              room.activeAction = null;
+            } else {
+              dealDamage(room, player.id, 1, trialAction.sourcePlayerId, 'tactical');
+              if ((room.activeAction as ServerActiveAction | null)?.type !== 'waiting_for_dying_heal') room.activeAction = null;
+            }
+          }
+
+          else if (room.activeAction.type === 'waiting_for_provoke_choice') {
+            if (player.id !== room.activeAction.targetPlayerId) return;
+            if (action === 'reveal' || player.cards.length < 2) {
+              revealHero(room, player);
+              addSystemLog(meta.roomCode, `⚔️ ${player.name} lật nhân vật trước Khiêu Khích.`);
+            } else {
+              const selectedIds = Array.isArray(cardIds) ? [...new Set(cardIds)] : [];
+              if (selectedIds.length !== 2 || selectedIds.some(id => !player.cards.some(card => card.id === id))) return;
+              selectedIds.forEach(id => {
+                const index = player.cards.findIndex(card => card.id === id);
+                room.discardPile.push(player.cards.splice(index, 1)[0]);
+              });
+              addSystemLog(meta.roomCode, `⚔️ ${player.name} bỏ 2 lá trước Khiêu Khích.`);
+            }
+            room.activeAction = null;
+          }
+
           else if (room.activeAction.type === 'waiting_for_dying_heal') {
             // Rescue dying player using heal
             if (action === 'heal') {
@@ -1339,6 +1824,24 @@ wss.on('connection', (ws) => {
 
           broadcastToRoom(meta.roomCode);
           checkVictoryConditions(room);
+          break;
+        }
+
+        case 'DESTROY_SELECT': {
+          const meta = wsMeta.get(ws);
+          if (!meta) return;
+          const room = rooms[meta.roomCode];
+          if (!room?.activeAction || room.activeAction.type !== 'select_destroy_equipment') return;
+          const source = room.players.find(player => player.id === room.activeAction?.sourcePlayerId);
+          const target = room.players.find(player => player.id === room.activeAction?.targetPlayerId);
+          if (!source || !target || source.id !== meta.playerId) return;
+          const equipmentIndex = target.equipments.findIndex(equipment => equipment.id === data.payload.targetCardId);
+          if (equipmentIndex === -1) return;
+          const destroyed = target.equipments.splice(equipmentIndex, 1)[0];
+          room.discardPile.push(destroyed);
+          room.activeAction = null;
+          addSystemLog(meta.roomCode, `🌪️ ${source.name} phá hủy [${destroyed.name}] của ${target.name}.`);
+          broadcastToRoom(meta.roomCode);
           break;
         }
 
@@ -1490,6 +1993,10 @@ wss.on('connection', (ws) => {
           room.status = 'lobby';
           room.winnerKingdom = null;
           room.activeAction = null;
+          room.pendingActions = [];
+          room.pendingDamages = [];
+          room.pacts = [];
+          room.trackers = [];
           room.deck = [];
           room.discardPile = [];
           room.turnPlayerId = null;
@@ -1535,7 +2042,7 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Extras for Spark skill & Ring
+// Extras for tactical-card hero skills
 function handleTacticalPlayExtras(room: ServerRoom, player: ServerPlayer) {
   // Spark skill: "Sau khi dùng thẻ Chiến thuật, rút 1 lá."
   if (player.isRevealed && player.hero === 'Spark' && !player.isLocked) {
@@ -1544,15 +2051,6 @@ function handleTacticalPlayExtras(room: ServerRoom, player: ServerPlayer) {
   }
 
   // Ring equipment check: "Lần đầu dùng thẻ Chiến thuật mỗi lượt, rút 1 lá."
-  const hasRing = player.equipments.some(e => e.type === 'ring');
-  if (hasRing) {
-    if (player.hasTacticalFirstPlayed === undefined) player.hasTacticalFirstPlayed = false;
-    if (!player.hasTacticalFirstPlayed) {
-      player.hasTacticalFirstPlayed = true;
-      drawCards(room, player, 1);
-      addSystemLog(room.code, `[Nhẫn] của ${player.name} được kích hoạt: Rút 1 lá.`);
-    }
-  }
 }
 
 // Configure client routes and start

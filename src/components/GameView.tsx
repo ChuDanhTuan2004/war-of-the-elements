@@ -23,8 +23,9 @@ interface GameViewProps {
   room: Room;
   myPlayerId: string;
   onPlayCard: (cardId: string, targetPlayerId?: string) => void;
-  onRespondAction: (action: 'dodge' | 'strike' | 'heal' | 'pass', cardId?: string) => void;
+  onRespondAction: (action: 'dodge' | 'strike' | 'heal' | 'pass' | 'discard' | 'reveal', cardId?: string, cardIds?: string[]) => void;
   onStealSelect: (targetType: 'hand' | 'equip', targetCardId?: string) => void;
+  onDestroySelect: (targetCardId: string) => void;
   onCloseViewResult: () => void;
   onRevealHero: () => void;
   onEndTurn: () => void;
@@ -91,6 +92,7 @@ export default function GameView({
   onPlayCard,
   onRespondAction,
   onStealSelect,
+  onDestroySelect,
   onCloseViewResult,
   onRevealHero,
   onEndTurn,
@@ -99,54 +101,87 @@ export default function GameView({
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [discardSelections, setDiscardSelections] = useState<string[]>([]);
+  const [responseSelections, setResponseSelections] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'battle' | 'rules' | 'history'>('battle');
+
+  useEffect(() => {
+    setResponseSelections([]);
+  }, [room.activeAction?.id]);
 
   const me = room.players.find(p => p.id === myPlayerId);
   const turnPlayer = room.players.find(p => p.id === room.turnPlayerId);
   const isMyTurn = room.turnPlayerId === myPlayerId;
-  const dodgeLimit = me?.equipments.some(equipment => equipment.type === 'boots') ? 2 : 1;
-  const canUseDodge = Boolean(me?.cards.some(card => card.type === 'dodge')) &&
-    (me?.dodgesUsedThisTurn ?? 0) < dodgeLimit;
+  const canUseDodge = Boolean(me?.cards.some(card => card.type === 'dodge'));
 
   const selectedCard = me?.cards.find(c => c.id === selectedCardId);
 
   // Helper: check if a card needs targeting
   const cardNeedsTarget = (card: Card) => {
     return [
+      'heal',
       'strike', 
       'lightning', 
       'duel', 
+      'explosion',
+      'assassinate',
+      'pursuit',
       'exchange', 
       'lock', 
+      'stun',
+      'freeze',
+      'whirlwind',
+      'bind',
       'view', 
       'steal', 
+      'magnet',
       'connect', 
       'supply', 
-      'protect'
+      'protect',
+      'rescue',
+      'resonance',
+      'pact',
+      'investigate',
+      'track',
+      'trial',
+      'provoke',
+      'expose',
     ].includes(card.type);
   };
 
   // Helper: check if target selection is valid
   const isValidTarget = (targetPlayer: Player) => {
     if (!selectedCard || !me) return false;
-    if (targetPlayer.id === myPlayerId) return false;
+    if (targetPlayer.id === myPlayerId && selectedCard.type !== 'heal') return false;
     if (targetPlayer.isEliminated) return false;
+
+    const playerIdx = room.players.findIndex(p => p.id === myPlayerId);
+    const targetIdx = room.players.findIndex(p => p.id === targetPlayer.id);
+    let distance = Math.min(
+      Math.abs(playerIdx - targetIdx),
+      room.players.length - Math.abs(playerIdx - targetIdx),
+    );
+    const anchored = targetPlayer.equipments.some(equipment => equipment.type === 'iron_anchor');
+    if (!anchored && me.magnetTargetId === targetPlayer.id) distance = 1;
+    else {
+      if (!anchored && me.equipments.some(equipment => equipment.type === 'wind_boots')) distance -= 1;
+      if (!anchored && me.equipments.some(equipment => equipment.type === 'compass')) distance -= 1;
+      if (targetPlayer.equipments.some(equipment => equipment.type === 'wind_wings')) distance += 1;
+      if (targetPlayer.equipments.some(equipment => equipment.type === 'cloak')) distance += 1;
+      distance = Math.max(1, distance);
+    }
+    if (targetPlayer.equipments.some(equipment => equipment.type === 'mist_screen') && distance >= 3) return false;
 
     // Strike range check
     if (selectedCard.type === 'strike') {
       const isFirstStrike = me.strikePlayedThisTurn === 0;
-      const hasInfiniteRange = me.isRevealed && me.hero === 'Bolt' && isFirstStrike;
+      const hasDart = me.equipments.some(e => e.type === 'dart');
+      const hasInfiniteRange = isFirstStrike && ((me.isRevealed && me.hero === 'Bolt') || hasDart);
       if (hasInfiniteRange) return true;
 
-      const hasSword = me.equipments.some(e => e.type === 'sword');
-      const maxRange = hasSword ? 2 : 1;
+      const weapon = me.equipments.find(e => e.equipSlot === 'weapon');
+      const telescopeBonus = me.equipments.some(e => e.type === 'telescope') ? 2 : 0;
+      const maxRange = (weapon?.range || 1) + telescopeBonus;
 
-      const playerIdx = room.players.findIndex(p => p.id === myPlayerId);
-      const targetIdx = room.players.findIndex(p => p.id === targetPlayer.id);
-      const distance = Math.min(
-        Math.abs(playerIdx - targetIdx),
-        room.players.length - Math.abs(playerIdx - targetIdx)
-      );
       return distance <= maxRange;
     }
 
@@ -154,6 +189,12 @@ export default function GameView({
   };
 
   const handleCardClick = (cardId: string) => {
+    if (room.activeAction?.type === 'waiting_for_provoke_choice' && room.activeAction.targetPlayerId === myPlayerId) {
+      setResponseSelections(previous => previous.includes(cardId)
+        ? previous.filter(id => id !== cardId)
+        : previous.length < 2 ? [...previous, cardId] : previous);
+      return;
+    }
     if (room.turnPhase === 'discard') {
       if (discardSelections.includes(cardId)) {
         setDiscardSelections(prev => prev.filter(id => id !== cardId));
@@ -276,6 +317,11 @@ export default function GameView({
                         {room.activeAction.type === 'waiting_for_dodge' && 'Yêu cầu mục tiêu tung lá ĐỠ (dodge) để chặn đòn.'}
                         {room.activeAction.type === 'waiting_for_duel_strike' && `QUYẾT ĐẤU kịch tính! Đến lượt ${room.players.find(p => p.id === room.activeAction?.duelTurnPlayerId)?.name} phải phóng lá ĐÁNH (strike).`}
                         {room.activeAction.type === 'waiting_for_volt_strike' && '⚡ VOLT có thể dùng ngay một lá ĐÁNH để phản công, hoặc bỏ qua.'}
+                        {room.activeAction.type === 'waiting_for_axe_discard' && '🪓 Người tấn công có thể bỏ 1 lá để Rìu vẫn gây sát thương.'}
+                        {room.activeAction.type === 'waiting_for_long_sword_discard' && '⚔️ Hãy chọn 1 lá trên tay để bỏ cho hiệu ứng Trường Kiếm.'}
+                        {room.activeAction.type === 'select_destroy_equipment' && '🌪️ Hãy chọn một trang bị của mục tiêu để phá hủy.'}
+                        {room.activeAction.type === 'waiting_for_trial_choice' && '🔥 Mục tiêu phải lật nhân vật hoặc nhận 1 sát thương.'}
+                        {room.activeAction.type === 'waiting_for_provoke_choice' && '⚔️ Mục tiêu phải lật nhân vật hoặc bỏ ngẫu nhiên 2 lá.'}
                         {room.activeAction.type === 'waiting_for_dying_heal' && '🔥 CỨU NGUY ĐỒNG ĐỘI! Thân chủ đang cận kề tử thần. Cần hồi sức gấp bằng lá HỒI (heal).'}
                         {room.activeAction.type === 'select_steal' && 'Đang lựa chọn lá bài/trang bị để cướp đoạt.'}
                         {room.activeAction.type === 'view_hand_result' && 'Đang hiển thị lá bài xem lén.'}
@@ -339,6 +385,29 @@ export default function GameView({
                         <button className={'px-4 py-2 bg-slate-800 hover:bg-slate-700 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('pass')}>Bỏ qua</button>
                       </div>
                     )}
+                    {room.activeAction.type === 'waiting_for_axe_discard' && room.activeAction.sourcePlayerId === myPlayerId && (
+                      <div className={'flex gap-2 flex-wrap'}>
+                        {me?.cards.map(card => <button key={card.id} className={'px-3 py-2 bg-orange-700 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('discard', card.id)}>Bỏ {card.emoji} {card.name}</button>)}
+                        <button className={'px-4 py-2 bg-slate-800 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('pass')}>Bỏ qua</button>
+                      </div>
+                    )}
+                    {room.activeAction.type === 'waiting_for_long_sword_discard' && room.activeAction.sourcePlayerId === myPlayerId && (
+                      <div className={'flex gap-2 flex-wrap'}>
+                        {me?.cards.map(card => <button key={card.id} className={'px-3 py-2 bg-indigo-700 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('discard', card.id)}>Bỏ {card.emoji} {card.name}</button>)}
+                      </div>
+                    )}
+                    {room.activeAction.type === 'waiting_for_trial_choice' && room.activeAction.targetPlayerId === myPlayerId && (
+                      <div className={'flex gap-2'}>
+                        <button className={'px-4 py-2 bg-amber-600 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('reveal')}>Lật nhân vật</button>
+                        <button className={'px-4 py-2 bg-red-700 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('pass')}>Nhận sát thương</button>
+                      </div>
+                    )}
+                    {room.activeAction.type === 'waiting_for_provoke_choice' && room.activeAction.targetPlayerId === myPlayerId && (
+                      <div className={'flex gap-2'}>
+                        <button className={'px-4 py-2 bg-amber-600 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('reveal')}>Lật nhân vật</button>
+                        <button className={'px-4 py-2 bg-rose-700 font-bold text-xs rounded-xl'} disabled={responseSelections.length !== 2} onClick={() => onRespondAction('discard', undefined, responseSelections)}>Bỏ 2 lá ({responseSelections.length}/2)</button>
+                      </div>
+                    )}
                     {/* If someone is dying, let players (including themselves) save them */}
                     {room.activeAction.type === 'waiting_for_dying_heal' && (
                       <div className="flex items-center gap-2.5">
@@ -355,6 +424,14 @@ export default function GameView({
                         >
                           Dùng HỒI cứu mạng
                         </button>
+                      </div>
+                    )}
+
+                    {room.activeAction.type === 'select_destroy_equipment' && room.activeAction.sourcePlayerId === myPlayerId && (
+                      <div className={'flex gap-2 flex-wrap'}>
+                        {room.players.find(player => player.id === room.activeAction?.targetPlayerId)?.equipments.map(equipment => (
+                          <button key={equipment.id} className={'px-3 py-2 bg-rose-700 font-bold text-xs rounded-xl'} onClick={() => onDestroySelect(equipment.id)}>Phá {equipment.emoji} {equipment.name}</button>
+                        ))}
                       </div>
                     )}
 
@@ -522,8 +599,8 @@ export default function GameView({
                     {/* Bottom row: Equipment Slots or Select button */}
                     <div className="flex items-center justify-between border-t border-slate-800/40 pt-2.5">
                       <div className="flex gap-1">
-                        {['sword', 'shield', 'boots', 'ring'].map((eqType) => {
-                          const equipped = player.equipments.find(e => e.type === eqType);
+                        {(['weapon', 'armor', 'accessory'] as const).map((eqType) => {
+                          const equipped = player.equipments.find(e => e.equipSlot === eqType);
                           return (
                             <div 
                               key={eqType}
@@ -533,7 +610,7 @@ export default function GameView({
                               title={equipped ? `${equipped.name}: ${equipped.description}` : `Trống slot ${eqType}`}
                             >
                               {equipped ? equipped.emoji : (
-                                eqType === 'sword' ? '🗡' : eqType === 'shield' ? '🛡' : eqType === 'boots' ? '👢' : '💍'
+                                eqType === 'weapon' ? '⚔️' : eqType === 'armor' ? '🛡️' : '🧭'
                               )}
                             </div>
                           );
@@ -818,7 +895,7 @@ export default function GameView({
               ) : (
                 me.cards.map((card) => {
                   const isSelected = selectedCardId === card.id;
-                  const isDiscardSelected = discardSelections.includes(card.id);
+                  const isDiscardSelected = discardSelections.includes(card.id) || responseSelections.includes(card.id);
                   
                   return (
                     <motion.div

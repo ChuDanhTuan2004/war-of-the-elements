@@ -5,18 +5,52 @@ export type CardType =
   | 'fire'      // Lửa
   | 'lightning' // Sét
   | 'duel'      // Đấu
+  | 'explosion'
+  | 'assassinate'
+  | 'pursuit'
   | 'draw'      // Rút
   | 'exchange'  // Đổi
   | 'lock'      // Khóa
+  | 'stun'
+  | 'freeze'
+  | 'whirlwind'
+  | 'bind'
   | 'view'      // Xem
   | 'steal'     // Cướp
-  | 'sword'     // Kiếm
-  | 'shield'    // Khiên
-  | 'boots'     // Giày
-  | 'ring'      // Nhẫn
+  | 'dagger'
+  | 'axe'
+  | 'hammer'
+  | 'long_sword'
+  | 'dual_swords'
+  | 'bow'
+  | 'dart'
+  | 'cannon'
+  | 'wooden_shield'
+  | 'stone_armor'
+  | 'water_armor'
+  | 'fire_armor'
+  | 'thorn_armor'
+  | 'cloak'
+  | 'crystal_shield'
+  | 'tower_shield'
+  | 'wind_boots'
+  | 'wind_wings'
+  | 'compass'
+  | 'mist_screen'
+  | 'magnet'
+  | 'telescope'
+  | 'iron_anchor'
   | 'connect'   // Kết Nối
   | 'supply'    // Tiếp Tế
-  | 'protect';  // Che Chở
+  | 'protect'   // Che Chở
+  | 'rescue'
+  | 'resonance'
+  | 'pact'
+  | 'investigate'
+  | 'track'
+  | 'trial'
+  | 'provoke'
+  | 'expose';
 
 export interface Card {
   id: string;
@@ -25,6 +59,8 @@ export interface Card {
   emoji: string;
   category: 'basic' | 'tactical' | 'equip' | 'teammate';
   description: string;
+  equipSlot?: 'weapon' | 'armor' | 'accessory';
+  range?: number;
 }
 
 export interface Player {
@@ -53,11 +89,12 @@ export interface Player {
   protectedByPlayerId: string | null; // ID of player who is protecting this player
   strikePlayedThisTurn: number; // Strike counts
   dodgesUsedThisTurn: number; // Dodge responses used during the current turn
+  magnetTargetId?: string | null;
 }
 
 export interface ActiveActionState {
   id: string;
-  type: 'waiting_for_dodge' | 'waiting_for_duel_strike' | 'waiting_for_dying_heal' | 'waiting_for_volt_strike' | 'view_hand_result' | 'select_steal' | 'select_exchange';
+  type: 'waiting_for_dodge' | 'waiting_for_duel_strike' | 'waiting_for_dying_heal' | 'waiting_for_volt_strike' | 'waiting_for_axe_discard' | 'waiting_for_long_sword_discard' | 'waiting_for_trial_choice' | 'waiting_for_provoke_choice' | 'view_hand_result' | 'select_steal' | 'select_destroy_equipment' | 'select_exchange';
   card: Card;
   sourcePlayerId: string;
   targetPlayerId: string;
@@ -65,6 +102,7 @@ export interface ActiveActionState {
   duelTurnPlayerId?: string; // Player ID whose turn it is to throw Strike
   dyingPlayerId?: string; // Player at 0 HP
   viewedCard?: Card; // Card currently viewed (if any)
+  viewedCards?: Card[];
 }
 
 export interface Room {

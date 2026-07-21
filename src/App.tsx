@@ -213,14 +213,19 @@ export default function App() {
     sendSocketAction('PLAY_CARD', { cardId, targetPlayerId });
   };
 
-  const handleRespondAction = (action: 'dodge' | 'strike' | 'heal' | 'pass', cardId?: string) => {
+  const handleRespondAction = (action: 'dodge' | 'strike' | 'heal' | 'pass' | 'discard' | 'reveal', cardId?: string, cardIds?: string[]) => {
     playSound('click');
-    sendSocketAction('RESPOND_ACTION', { action, cardId });
+    sendSocketAction('RESPOND_ACTION', { action, cardId, cardIds });
   };
 
   const handleStealSelect = (targetType: 'hand' | 'equip', targetCardId?: string) => {
     playSound('click');
     sendSocketAction('STEAL_SELECT', { targetType, targetCardId });
+  };
+
+  const handleDestroySelect = (targetCardId: string) => {
+    playSound('click');
+    sendSocketAction('DESTROY_SELECT', { targetCardId });
   };
 
   const handleCloseViewResult = () => {
@@ -420,6 +425,7 @@ export default function App() {
                   onPlayCard={handlePlayCard}
                   onRespondAction={handleRespondAction}
                   onStealSelect={handleStealSelect}
+                  onDestroySelect={handleDestroySelect}
                   onCloseViewResult={handleCloseViewResult}
                   onRevealHero={handleRevealHero}
                   onEndTurn={handleEndTurn}
