@@ -16,10 +16,17 @@ const wss = new WebSocketServer({ server });
 const PORT = 3333;
 
 // Internal Room state extending client Room types
-interface ServerRoom extends Omit<Room, 'players'> {
+interface ServerActiveAction extends ActiveActionState {
+  remainingTargets?: string[];
+}
+
+interface ServerRoom extends Omit<Room, 'players' | 'activeAction'> {
   players: ServerPlayer[];
   deck: Card[];
   discardPile: Card[];
+  activeAction: ServerActiveAction | null;
+  pendingActions: ServerActiveAction[];
+  privateLogs: Record<string, string[]>;
   dyingTimer?: NodeJS.Timeout;
 }
 
@@ -106,6 +113,15 @@ function addSystemLog(roomCode: string, message: string) {
   }
 }
 
+function addPrivateLog(room: ServerRoom, playerIds: string[], message: string) {
+  const timestamp = new Date().toLocaleTimeString('vi-VN', { hour12: false });
+  playerIds.forEach((playerId) => {
+    room.privateLogs[playerId] ??= [];
+    room.privateLogs[playerId].unshift(`[${timestamp}] ${message}`);
+    room.privateLogs[playerId] = room.privateLogs[playerId].slice(0, 40);
+  });
+}
+
 // Sanitizes room data for specific player
 function getSanitizedRoom(room: ServerRoom, playerId: string) {
   const myPlayer = room.players.find(p => p.id === playerId);
@@ -113,7 +129,7 @@ function getSanitizedRoom(room: ServerRoom, playerId: string) {
     code: room.code,
     status: room.status,
     gameTimeLeft: room.gameTimeLeft,
-    systemLogs: room.systemLogs,
+    systemLogs: [...(room.privateLogs[playerId] || []), ...room.systemLogs].slice(0, 40),
     turnPlayerId: room.turnPlayerId,
     turnPhase: room.turnPhase,
     deckCount: room.deck.length,
@@ -157,6 +173,7 @@ function getSanitizedRoom(room: ServerRoom, playerId: string) {
         protectedByPlayerId: p.protectedByPlayerId,
         revealedTeammates: isSelf ? p.revealedTeammates : [],
         strikePlayedThisTurn: p.strikePlayedThisTurn,
+        dodgesUsedThisTurn: p.dodgesUsedThisTurn,
       };
     })
   };
@@ -205,40 +222,31 @@ function generateDeck() {
 // Factions and heroes allocator
 function assignFactionsAndHeroes(players: ServerPlayer[]) {
   const count = players.length;
-  let factions: ('flame' | 'ocean' | 'forest' | 'storm')[] = [];
-
-  if (count === 3) {
-    factions = ['flame', 'ocean', 'forest'];
-  } else if (count === 4) {
-    factions = ['flame', 'flame', 'ocean', 'ocean'];
-  } else if (count === 5) {
-    factions = ['flame', 'flame', 'ocean', 'ocean', 'ocean'];
-  } else if (count === 6) {
-    factions = ['flame', 'flame', 'ocean', 'ocean', 'forest', 'forest'];
-  } else if (count === 7) {
-    factions = ['flame', 'flame', 'ocean', 'ocean', 'forest', 'forest', 'forest'];
-  } else if (count === 8) {
-    factions = ['flame', 'flame', 'ocean', 'ocean', 'forest', 'forest', 'storm', 'storm'];
-  } else if (count === 9) {
-    factions = ['flame', 'flame', 'flame', 'ocean', 'ocean', 'ocean', 'forest', 'forest', 'forest'];
-  } else if (count === 10) {
-    factions = ['flame', 'flame', 'ocean', 'ocean', 'forest', 'forest', 'forest', 'storm', 'storm', 'storm'];
-  } else if (count === 11) {
-    factions = ['flame', 'flame', 'ocean', 'ocean', 'ocean', 'forest', 'forest', 'forest', 'storm', 'storm', 'storm'];
-  } else {
-    // 12 players or default limit
-    factions = [
-      'flame', 'flame', 'flame',
-      'ocean', 'ocean', 'ocean',
-      'forest', 'forest', 'forest',
-      'storm', 'storm', 'storm'
-    ];
-  }
+  const teamSizesByCount: Record<number, number[]> = {
+    3: [1, 1, 1],
+    4: [2, 2],
+    5: [2, 3],
+    6: [2, 2, 2],
+    7: [2, 2, 3],
+    8: [2, 2, 2, 2],
+    9: [3, 3, 3],
+    10: [2, 2, 3, 3],
+    11: [2, 3, 3, 3],
+    12: [3, 3, 3, 3],
+  };
+  const teamSizes = teamSizesByCount[count] || teamSizesByCount[12];
+  const kingdoms = (['flame', 'ocean', 'forest', 'storm'] as const)
+    .slice()
+    .sort(() => Math.random() - 0.5)
+    .slice(0, teamSizes.length);
+  const factions = teamSizes.flatMap((size, index) =>
+    Array.from({ length: size }, () => kingdoms[index])
+  );
 
   // Shuffle factions
   factions.sort(() => Math.random() - 0.5);
 
-  const heroPool = {
+  const heroPool: Record<'flame' | 'ocean' | 'forest' | 'storm', string[]> = {
     flame: ['Ember', 'Blaze', 'Pyro'],
     ocean: ['Aqua', 'Coral', 'Mist'],
     forest: ['Flora', 'Moss', 'Bloom'],
@@ -250,7 +258,7 @@ function assignFactionsAndHeroes(players: ServerPlayer[]) {
     p.kingdom = kingdom;
 
     const pool = heroPool[kingdom];
-    const hero = pool[Math.floor(Math.random() * pool.length)];
+    const hero = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
     p.hero = hero;
 
     let hp = 4;
@@ -272,6 +280,8 @@ function assignFactionsAndHeroes(players: ServerPlayer[]) {
     p.protectingPlayerId = null;
     p.protectedByPlayerId = null;
     p.strikePlayedThisTurn = 0;
+    p.dodgesUsedThisTurn = 0;
+    p.hasTacticalFirstPlayed = false;
   });
 }
 
@@ -374,10 +384,13 @@ function dealDamage(room: ServerRoom, targetId: string, amount: number, sourceId
     room.dyingTimer = setTimeout(() => {
       const activeRoom = rooms[room.code];
       if (activeRoom && activeRoom.activeAction && activeRoom.activeAction.type === 'waiting_for_dying_heal' && activeRoom.activeAction.dyingPlayerId === targetId) {
+        const turnPlayerBeforeElimination = activeRoom.turnPlayerId;
         eliminatePlayer(activeRoom, targetId, sourceId);
-        activeRoom.activeAction = null;
-        broadcastToRoom(activeRoom.code);
         checkVictoryConditions(activeRoom);
+        if (activeRoom.status === 'playing' && activeRoom.turnPlayerId === turnPlayerBeforeElimination) {
+          resumePendingAction(activeRoom);
+        }
+        broadcastToRoom(activeRoom.code);
       }
     }, 12000);
   }
@@ -437,21 +450,24 @@ function startTurn(room: ServerRoom, playerId: string) {
   const p = room.players.find(pl => pl.id === playerId);
   if (!p) return;
 
-  p.strikePlayedThisTurn = 0;
-  p.shieldFirstBlockActive = true;
-  p.blazeFirstDmgActive = true;
-  p.isLocked = false; // Reset lock at start of turn
-  p.protectedByPlayerId = null;
-
-  // Clear connection protections
-  room.players.forEach((other) => {
-    if (other.protectingPlayerId === playerId) {
-      other.protectingPlayerId = null;
-    }
-    if (other.protectedByPlayerId === playerId) {
-      other.protectedByPlayerId = null;
-    }
+  room.players.forEach((player) => {
+    player.shieldFirstBlockActive = true;
+    player.blazeFirstDmgActive = true;
+    player.dodgesUsedThisTurn = 0;
+    player.isLocked = false;
   });
+
+  p.strikePlayedThisTurn = 0;
+  p.hasTacticalFirstPlayed = false;
+
+  // Che Chở lasts until the beginning of the protector's next turn.
+  if (p.protectingPlayerId) {
+    const protectedPlayer = room.players.find(other => other.id === p.protectingPlayerId);
+    if (protectedPlayer?.protectedByPlayerId === p.id) {
+      protectedPlayer.protectedByPlayerId = null;
+    }
+    p.protectingPlayerId = null;
+  }
 
   addSystemLog(room.code, `⚡ Lượt mới của ${p.name}.`);
 
@@ -474,6 +490,7 @@ function startTurn(room: ServerRoom, playerId: string) {
 
 function advanceTurn(room: ServerRoom) {
   room.activeAction = null;
+  room.pendingActions = [];
   const alivePlayers = room.players.filter(p => !p.isEliminated);
   if (alivePlayers.length === 0) return;
 
@@ -501,6 +518,63 @@ function endTurn(room: ServerRoom, playerId: string) {
     addSystemLog(room.code, `${p.name} cần bỏ bớt ${cardsCount - p.hp} lá bài để kết thúc lượt.`);
   } else {
     advanceTurn(room);
+  }
+}
+
+function getNextAction(room: ServerRoom, completedAction: ServerActiveAction): ServerActiveAction | null {
+  if (completedAction.card.type !== 'fire' || !completedAction.remainingTargets?.length) {
+    return null;
+  }
+
+  const remainingTargets = [...completedAction.remainingTargets];
+  while (remainingTargets.length > 0) {
+    const nextTargetId = remainingTargets.shift()!;
+    const nextTarget = room.players.find(player => player.id === nextTargetId && !player.isEliminated);
+    if (nextTarget) {
+      return {
+        id: completedAction.id,
+        type: 'waiting_for_dodge',
+        card: completedAction.card,
+        sourcePlayerId: completedAction.sourcePlayerId,
+        targetPlayerId: nextTargetId,
+        pendingDamage: 1,
+        remainingTargets,
+      };
+    }
+  }
+
+  return null;
+}
+
+function resumePendingAction(room: ServerRoom) {
+  room.activeAction = room.pendingActions.pop() || null;
+}
+
+function finishResolvedAction(room: ServerRoom, completedAction: ServerActiveAction) {
+  const nextAction = getNextAction(room, completedAction);
+  if (nextAction) {
+    room.activeAction = nextAction;
+  } else {
+    resumePendingAction(room);
+  }
+}
+
+function dealActionDamage(
+  room: ServerRoom,
+  completedAction: ServerActiveAction,
+  targetId: string,
+  amount: number,
+  sourceId: string,
+) {
+  const nextAction = getNextAction(room, completedAction);
+  dealDamage(room, targetId, amount, sourceId);
+
+  if (room.activeAction?.type === 'waiting_for_dying_heal') {
+    if (nextAction) room.pendingActions.push(nextAction);
+  } else if (nextAction) {
+    room.activeAction = nextAction;
+  } else {
+    resumePendingAction(room);
   }
 }
 
@@ -588,6 +662,7 @@ wss.on('connection', (ws) => {
             protectingPlayerId: null,
             protectedByPlayerId: null,
             strikePlayedThisTurn: 0,
+            dodgesUsedThisTurn: 0,
           };
 
           rooms[roomCode] = {
@@ -603,6 +678,8 @@ wss.on('connection', (ws) => {
             deckCount: 0,
             discardPileCount: 0,
             activeAction: null,
+            pendingActions: [],
+            privateLogs: { [newPlayer.id]: [] },
             winnerKingdom: null,
             deck: [],
             discardPile: []
@@ -661,9 +738,11 @@ wss.on('connection', (ws) => {
             protectingPlayerId: null,
             protectedByPlayerId: null,
             strikePlayedThisTurn: 0,
+            dodgesUsedThisTurn: 0,
           };
 
           room.players.push(newPlayer);
+          room.privateLogs[newPlayer.id] = [];
           wsMeta.set(ws, { playerId: newPlayer.id, roomCode: cleanCode });
 
           addSystemLog(cleanCode, `${newPlayer.name} đã gia nhập.`);
@@ -727,7 +806,9 @@ wss.on('connection', (ws) => {
           room.status = 'playing';
           room.winnerKingdom = null;
           room.activeAction = null;
+          room.pendingActions = [];
           room.systemLogs = [];
+          room.privateLogs = Object.fromEntries(room.players.map(roomPlayer => [roomPlayer.id, []]));
 
           // Assign Factions & Heroes
           assignFactionsAndHeroes(room.players);
@@ -759,7 +840,8 @@ wss.on('connection', (ws) => {
           if (!room || room.status !== 'playing') return;
 
           const player = room.players.find(p => p.id === meta.playerId);
-          if (player && !player.isRevealed && !player.isEliminated) {
+          if (player && !player.isRevealed && !player.isEliminated &&
+            room.turnPlayerId === player.id && room.turnPhase === 'action' && !room.activeAction) {
             player.isRevealed = true;
             addSystemLog(meta.roomCode, `📢 ${player.name} đã LẬT NHÂN VẬT! [${player.kingdom?.toUpperCase()}] - Anh hùng: [${player.hero}]. HP: ${player.hp}/${player.maxHp}`);
 
@@ -779,6 +861,10 @@ wss.on('connection', (ws) => {
 
           const player = room.players.find(p => p.id === meta.playerId);
           if (!player || player.isEliminated || room.turnPlayerId !== player.id || room.turnPhase !== 'action') return;
+          if (room.activeAction) {
+            ws.send(JSON.stringify({ type: 'ERROR', message: 'Hãy giải quyết hành động hiện tại trước khi dùng lá bài khác.' }));
+            return;
+          }
 
           const { cardId, targetPlayerId } = data.payload;
           const cardIndex = player.cards.findIndex(c => c.id === cardId);
@@ -897,8 +983,7 @@ wss.on('connection', (ws) => {
                 sourcePlayerId: player.id,
                 targetPlayerId: otherLiving[0].id,
                 pendingDamage: 1,
-                // Add remaining targets in a server-only list on activeAction
-                ...({ remainingTargets: otherLiving.slice(1).map(p => p.id) } as any)
+                remainingTargets: otherLiving.slice(1).map(p => p.id),
               };
             }
           }
@@ -964,25 +1049,20 @@ wss.on('connection', (ws) => {
             addSystemLog(meta.roomCode, `🔄 ${player.name} dùng ĐỔI bài với ${target.name}.`);
             handleTacticalPlayExtras(room, player);
 
-            // Moss forest kingdom immunity
-            if (target.isRevealed && target.hero === 'Moss' && !target.isLocked) {
-              addSystemLog(meta.roomCode, `🛡️ Kỹ năng [Moss]: ${target.name} miễn nhiễm với cướp hoặc đổi bài!`);
+            // Moss only protects equipment from Steal; Exchange still affects hand cards.
+            if (player.cards.length > 0 && target.cards.length > 0) {
+              const myRandIdx = Math.floor(Math.random() * player.cards.length);
+              const targetRandIdx = Math.floor(Math.random() * target.cards.length);
+
+              const myCard = player.cards.splice(myRandIdx, 1)[0];
+              const targetCard = target.cards.splice(targetRandIdx, 1)[0];
+
+              player.cards.push(targetCard);
+              target.cards.push(myCard);
+
+              addSystemLog(meta.roomCode, `Trao đổi thành công! Hai người nhận ngẫu nhiên 1 lá của nhau.`);
             } else {
-              // Execute swap
-              if (player.cards.length > 0 && target.cards.length > 0) {
-                const myRandIdx = Math.floor(Math.random() * player.cards.length);
-                const targetRandIdx = Math.floor(Math.random() * target.cards.length);
-
-                const myCard = player.cards.splice(myRandIdx, 1)[0];
-                const targetCard = target.cards.splice(targetRandIdx, 1)[0];
-
-                player.cards.push(targetCard);
-                target.cards.push(myCard);
-
-                addSystemLog(meta.roomCode, `Trao đổi thành công! Hai người nhận ngẫu nhiên 1 lá của nhau.`);
-              } else {
-                addSystemLog(meta.roomCode, `Không thành công do một trong hai người không có bài trên tay.`);
-              }
+              addSystemLog(meta.roomCode, `Không thành công do một trong hai người không có bài trên tay.`);
             }
           }
 
@@ -1035,13 +1115,9 @@ wss.on('connection', (ws) => {
               return;
             }
 
-            if (target.isRevealed && target.hero === 'Moss' && !target.isLocked) {
-              ws.send(JSON.stringify({ type: 'ERROR', message: `${target.name} là anh hùng [Moss], không thể bị cướp đoạt vật phẩm!` }));
-              return;
-            }
-
-            if (target.cards.length === 0 && target.equipments.length === 0) {
-              ws.send(JSON.stringify({ type: 'ERROR', message: 'Mục tiêu không có bài hay trang bị nào.' }));
+            const mossProtectsEquipment = target.isRevealed && target.hero === 'Moss' && !target.isLocked;
+            if (target.cards.length === 0 && (target.equipments.length === 0 || mossProtectsEquipment)) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Mục tiêu không có bài hay trang bị nào có thể cướp.' }));
               return;
             }
 
@@ -1097,9 +1173,9 @@ wss.on('connection', (ws) => {
               if (!target.revealedTeammates.includes(player.id)) {
                 target.revealedTeammates.push(player.id);
               }
-              addSystemLog(meta.roomCode, `✨ Phản ứng năng lượng! ${player.name} và ${target.name} đã NHẬN RA nhau là đồng đội cùng phe!`);
+              addPrivateLog(room, [player.id, target.id], `✨ ${player.name} và ${target.name} đã nhận ra nhau là đồng đội cùng phe!`);
             } else {
-              addSystemLog(meta.roomCode, `Không có phản ứng gì xảy ra. Họ thuộc các vương quốc khác nhau.`);
+              addPrivateLog(room, [player.id, target.id], `Không có phản ứng đồng đội: ${player.name} và ${target.name} thuộc các phe khác nhau.`);
             }
 
             if (card.type === 'supply') {
@@ -1130,36 +1206,49 @@ wss.on('connection', (ws) => {
 
           if (room.activeAction.type === 'waiting_for_dodge') {
             if (player.id !== room.activeAction.targetPlayerId) return;
+            const completedAction = room.activeAction;
 
             if (action === 'dodge') {
               const cardIdx = player.cards.findIndex(c => c.id === cardId && c.type === 'dodge');
               if (cardIdx === -1) return;
 
+              const hasBoots = player.equipments.some(equipment => equipment.type === 'boots');
+              const dodgeLimit = hasBoots ? 2 : 1;
+              if (player.dodgesUsedThisTurn >= dodgeLimit) {
+                ws.send(JSON.stringify({ type: 'ERROR', message: `Bạn chỉ có thể dùng Đỡ ${dodgeLimit} lần trong lượt này.` }));
+                return;
+              }
+
               const dodgeCard = player.cards[cardIdx];
               player.cards.splice(cardIdx, 1);
               room.discardPile.push(dodgeCard);
+              player.dodgesUsedThisTurn += 1;
 
               addSystemLog(meta.roomCode, `🛡️ ${player.name} dùng ĐỠ né tránh đòn tấn công thành công.`);
 
               // Volt skill trigger: "Sau khi dùng Đỡ thành công, có thể dùng ngay 1 lá Đánh."
-              if (player.isRevealed && player.hero === 'Volt' && !player.isLocked) {
-                // To keep client flow robust, let's give Volt 1 strike refund or draw cards,
-                // or just log it and let them hit. Let's let Volt draw 1 card or immediately deal 1 counter damage to attacker!
-                const attacker = room.players.find(a => a.id === room.activeAction?.sourcePlayerId);
-                if (attacker && !attacker.isEliminated) {
-                  dealDamage(room, attacker.id, 1, player.id);
-                  addSystemLog(meta.roomCode, `⚡ Kỹ năng [Volt]: ${player.name} phản đòn giáng 1 sát thương ngược lại ${attacker.name}!`);
-                }
+              const attacker = room.players.find(a => a.id === completedAction.sourcePlayerId && !a.isEliminated);
+              const canVoltStrike = player.isRevealed && player.hero === 'Volt' && !player.isLocked &&
+                attacker && player.cards.some(card => card.type === 'strike');
+              if (canVoltStrike && attacker) {
+                const nextAction = getNextAction(room, completedAction);
+                if (nextAction) room.pendingActions.push(nextAction);
+                room.activeAction = {
+                  id: `volt_${Math.random().toString(36).substring(2, 9)}`,
+                  type: 'waiting_for_volt_strike',
+                  card: dodgeCard,
+                  sourcePlayerId: player.id,
+                  targetPlayerId: attacker.id,
+                  pendingDamage: 0,
+                };
+                addSystemLog(meta.roomCode, `⚡ Kỹ năng [Volt]: ${player.name} có thể dùng ngay 1 lá Đánh phản công ${attacker.name}.`);
+              } else {
+                finishResolvedAction(room, completedAction);
               }
-
-              // Proceed with Fire sequence or end action
-              resolveNextFireOrEndAction(room);
             } else {
               // Failed or decided to take damage
               addSystemLog(meta.roomCode, `💔 ${player.name} không thể Đỡ đòn tấn công.`);
-              dealDamage(room, player.id, room.activeAction.pendingDamage, room.activeAction.sourcePlayerId);
-              
-              resolveNextFireOrEndAction(room);
+              dealActionDamage(room, completedAction, player.id, completedAction.pendingDamage, completedAction.sourcePlayerId);
             }
           }
 
@@ -1185,9 +1274,36 @@ wss.on('connection', (ws) => {
               room.activeAction.duelTurnPlayerId = nextDuelPlayerId;
             } else {
               // Duel loser takes damage
+              const completedAction = room.activeAction;
+              const damageSourceId = completedAction.sourcePlayerId === player.id
+                ? completedAction.targetPlayerId
+                : completedAction.sourcePlayerId;
               addSystemLog(meta.roomCode, `💔 ${player.name} kiệt sức chịu thua trận đấu tay đôi!`);
-              dealDamage(room, player.id, 1, room.activeAction.sourcePlayerId === player.id ? room.activeAction.targetPlayerId : room.activeAction.sourcePlayerId);
-              room.activeAction = null;
+              dealActionDamage(room, completedAction, player.id, 1, damageSourceId);
+            }
+          }
+
+          else if (room.activeAction.type === 'waiting_for_volt_strike') {
+            if (player.id !== room.activeAction.sourcePlayerId) return;
+            const voltAction = room.activeAction;
+
+            if (action === 'strike') {
+              const cardIdx = player.cards.findIndex(c => c.id === cardId && c.type === 'strike');
+              if (cardIdx === -1) return;
+
+              const strikeCard = player.cards.splice(cardIdx, 1)[0];
+              room.discardPile.push(strikeCard);
+              room.activeAction = {
+                id: `volt_strike_${Math.random().toString(36).substring(2, 9)}`,
+                type: 'waiting_for_dodge',
+                card: strikeCard,
+                sourcePlayerId: player.id,
+                targetPlayerId: voltAction.targetPlayerId,
+                pendingDamage: 1,
+              };
+              addSystemLog(meta.roomCode, `⚡ ${player.name} dùng một lá ĐÁNH để phản công bằng kỹ năng Volt.`);
+            } else {
+              resumePendingAction(room);
             }
           }
 
@@ -1216,7 +1332,7 @@ wss.on('connection', (ws) => {
                   addSystemLog(meta.roomCode, `Kỹ năng [Aqua]: ${player.name} cứu đồng đội và rút 1 lá.`);
                 }
 
-                room.activeAction = null;
+                resumePendingAction(room);
               }
             }
           }
@@ -1241,20 +1357,22 @@ wss.on('connection', (ws) => {
           const { targetType, targetCardId } = data.payload; // 'hand' or 'equip'
 
           if (targetType === 'equip') {
-            const eqIdx = target.equipments.findIndex(e => e.id === targetCardId);
-            if (eqIdx !== -1) {
-              const stolen = target.equipments.splice(eqIdx, 1)[0];
-              source.cards.push(stolen);
-              addSystemLog(meta.roomCode, `🎯 ${source.name} đã giật lấy món đồ [${stolen.name}] từ trang bị của ${target.name}.`);
+            if (target.isRevealed && target.hero === 'Moss' && !target.isLocked) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: `Kỹ năng Moss bảo vệ trang bị của ${target.name}.` }));
+              return;
             }
+            const eqIdx = target.equipments.findIndex(e => e.id === targetCardId);
+            if (eqIdx === -1) return;
+            const stolen = target.equipments.splice(eqIdx, 1)[0];
+            source.cards.push(stolen);
+            addSystemLog(meta.roomCode, `🎯 ${source.name} đã giật lấy món đồ [${stolen.name}] từ trang bị của ${target.name}.`);
           } else {
             // hand card random steal
-            if (target.cards.length > 0) {
-              const randIdx = Math.floor(Math.random() * target.cards.length);
-              const stolen = target.cards.splice(randIdx, 1)[0];
-              source.cards.push(stolen);
-              addSystemLog(meta.roomCode, `🎯 ${source.name} đã tước đoạt thành công 1 lá bài ẩn trên tay của ${target.name}.`);
-            }
+            if (target.cards.length === 0) return;
+            const randIdx = Math.floor(Math.random() * target.cards.length);
+            const stolen = target.cards.splice(randIdx, 1)[0];
+            source.cards.push(stolen);
+            addSystemLog(meta.roomCode, `🎯 ${source.name} đã tước đoạt thành công 1 lá bài ẩn trên tay của ${target.name}.`);
           }
 
           room.activeAction = null;
@@ -1280,6 +1398,11 @@ wss.on('connection', (ws) => {
 
           const room = rooms[meta.roomCode];
           if (!room || room.status !== 'playing' || room.turnPlayerId !== meta.playerId) return;
+
+          if (room.activeAction) {
+            ws.send(JSON.stringify({ type: 'ERROR', message: 'Hãy giải quyết hành động hiện tại trước khi kết thúc lượt.' }));
+            return;
+          }
 
           endTurn(room, meta.playerId);
           broadcastToRoom(meta.roomCode);
@@ -1384,6 +1507,8 @@ wss.on('connection', (ws) => {
             p.revealedTeammates = [];
             p.isLocked = false;
             p.strikePlayedThisTurn = 0;
+            p.dodgesUsedThisTurn = 0;
+            p.hasTacticalFirstPlayed = false;
           });
 
           addSystemLog(meta.roomCode, `Phòng đấu được đưa về Chờ bởi ${player.name}.`);
@@ -1420,43 +1545,13 @@ function handleTacticalPlayExtras(room: ServerRoom, player: ServerPlayer) {
 
   // Ring equipment check: "Lần đầu dùng thẻ Chiến thuật mỗi lượt, rút 1 lá."
   const hasRing = player.equipments.some(e => e.type === 'ring');
-  if (hasRing && !player.isLocked) {
+  if (hasRing) {
     if (player.hasTacticalFirstPlayed === undefined) player.hasTacticalFirstPlayed = false;
     if (!player.hasTacticalFirstPlayed) {
       player.hasTacticalFirstPlayed = true;
       drawCards(room, player, 1);
       addSystemLog(room.code, `[Nhẫn] của ${player.name} được kích hoạt: Rút 1 lá.`);
     }
-  }
-}
-
-// Proceed with Fire sequence or end action
-function resolveNextFireOrEndAction(room: ServerRoom) {
-  const customAction = room.activeAction as any;
-  if (customAction && customAction.remainingTargets && customAction.remainingTargets.length > 0) {
-    const nextTargetId = customAction.remainingTargets[0];
-    const nextTarget = room.players.find(p => p.id === nextTargetId && !p.isEliminated);
-
-    if (nextTarget) {
-      room.activeAction = {
-        id: customAction.id,
-        type: 'waiting_for_dodge',
-        card: customAction.card,
-        sourcePlayerId: customAction.sourcePlayerId,
-        targetPlayerId: nextTarget.id,
-        pendingDamage: 1,
-        ...({ remainingTargets: customAction.remainingTargets.slice(1) } as any)
-      };
-    } else {
-      // Target was already eliminated, skip
-      room.activeAction = {
-        ...customAction,
-        remainingTargets: customAction.remainingTargets.slice(1)
-      };
-      resolveNextFireOrEndAction(room);
-    }
-  } else {
-    room.activeAction = null;
   }
 }
 

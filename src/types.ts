@@ -52,11 +52,12 @@ export interface Player {
   protectingPlayerId: string | null; // ID of player this player is protecting (Che Chở)
   protectedByPlayerId: string | null; // ID of player who is protecting this player
   strikePlayedThisTurn: number; // Strike counts
+  dodgesUsedThisTurn: number; // Dodge responses used during the current turn
 }
 
 export interface ActiveActionState {
   id: string;
-  type: 'waiting_for_dodge' | 'waiting_for_duel_strike' | 'waiting_for_dying_heal' | 'view_hand_result' | 'select_steal' | 'select_exchange';
+  type: 'waiting_for_dodge' | 'waiting_for_duel_strike' | 'waiting_for_dying_heal' | 'waiting_for_volt_strike' | 'view_hand_result' | 'select_steal' | 'select_exchange';
   card: Card;
   sourcePlayerId: string;
   targetPlayerId: string;

@@ -104,6 +104,9 @@ export default function GameView({
   const me = room.players.find(p => p.id === myPlayerId);
   const turnPlayer = room.players.find(p => p.id === room.turnPlayerId);
   const isMyTurn = room.turnPlayerId === myPlayerId;
+  const dodgeLimit = me?.equipments.some(equipment => equipment.type === 'boots') ? 2 : 1;
+  const canUseDodge = Boolean(me?.cards.some(card => card.type === 'dodge')) &&
+    (me?.dodgesUsedThisTurn ?? 0) < dodgeLimit;
 
   const selectedCard = me?.cards.find(c => c.id === selectedCardId);
 
@@ -272,6 +275,7 @@ export default function GameView({
                       <p className="text-xs text-slate-400 mt-1 max-w-md">
                         {room.activeAction.type === 'waiting_for_dodge' && 'Yêu cầu mục tiêu tung lá ĐỠ (dodge) để chặn đòn.'}
                         {room.activeAction.type === 'waiting_for_duel_strike' && `QUYẾT ĐẤU kịch tính! Đến lượt ${room.players.find(p => p.id === room.activeAction?.duelTurnPlayerId)?.name} phải phóng lá ĐÁNH (strike).`}
+                        {room.activeAction.type === 'waiting_for_volt_strike' && '⚡ VOLT có thể dùng ngay một lá ĐÁNH để phản công, hoặc bỏ qua.'}
                         {room.activeAction.type === 'waiting_for_dying_heal' && '🔥 CỨU NGUY ĐỒNG ĐỘI! Thân chủ đang cận kề tử thần. Cần hồi sức gấp bằng lá HỒI (heal).'}
                         {room.activeAction.type === 'select_steal' && 'Đang lựa chọn lá bài/trang bị để cướp đoạt.'}
                         {room.activeAction.type === 'view_hand_result' && 'Đang hiển thị lá bài xem lén.'}
@@ -291,7 +295,7 @@ export default function GameView({
                               onRespondAction('dodge', dCard.id);
                             }
                           }}
-                          disabled={!me?.cards.some(c => c.type === 'dodge')}
+                          disabled={!canUseDodge}
                           className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 font-bold text-xs rounded-xl cursor-pointer transition-all"
                         >
                           Đỡ đòn
@@ -329,6 +333,12 @@ export default function GameView({
                       </div>
                     )}
 
+                    {room.activeAction.type === 'waiting_for_volt_strike' && room.activeAction.sourcePlayerId === myPlayerId && (
+                      <div className={'flex gap-2'}>
+                        <button className={'px-4 py-2 bg-purple-600 hover:bg-purple-500 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('strike', me?.cards.find(item => item.type === 'strike')?.id)}>Volt phản công</button>
+                        <button className={'px-4 py-2 bg-slate-800 hover:bg-slate-700 font-bold text-xs rounded-xl'} onClick={() => onRespondAction('pass')}>Bỏ qua</button>
+                      </div>
+                    )}
                     {/* If someone is dying, let players (including themselves) save them */}
                     {room.activeAction.type === 'waiting_for_dying_heal' && (
                       <div className="flex items-center gap-2.5">
@@ -744,7 +754,7 @@ export default function GameView({
               </div>
 
               {/* Reveal Hero action triggers */}
-              {!me.isRevealed && !me.isEliminated && (
+              {!me.isRevealed && !me.isEliminated && isMyTurn && room.turnPhase === 'action' && !room.activeAction && (
                 <button
                   onClick={onRevealHero}
                   className="w-full py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-extrabold text-xs rounded-xl shadow-lg cursor-pointer transition-transform duration-150 active:scale-[0.98] flex items-center justify-center gap-1.5"
@@ -780,6 +790,7 @@ export default function GameView({
                   {room.turnPhase === 'action' ? (
                     <button
                       onClick={onEndTurn}
+                      disabled={Boolean(room.activeAction)}
                       className="px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-500 hover:from-amber-500 hover:to-orange-400 text-white font-black text-xs rounded-xl cursor-pointer shadow transition-all flex items-center gap-1"
                     >
                       Kết thúc Hành Động <ChevronRight className="w-4 h-4" />
@@ -881,7 +892,7 @@ export default function GameView({
               </div>
 
               {/* Action play triggers */}
-              {selectedCard && isMyTurn && room.turnPhase === 'action' && (
+              {selectedCard && isMyTurn && room.turnPhase === 'action' && !room.activeAction && (
                 <button
                   onClick={handlePlayCardAction}
                   disabled={cardNeedsTarget(selectedCard) && !selectedTargetId}
