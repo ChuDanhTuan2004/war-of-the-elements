@@ -116,7 +116,7 @@ export interface Room {
 
   // Game Engine State
   turnPlayerId: string | null;
-  turnPhase: 'draw' | 'action' | 'discard' | null;
+  turnPhase: 'start' | 'draw' | 'action' | 'discard' | 'end' | null;
   deckCount: number;
   discardPileCount: number;
   activeAction: ActiveActionState | null;

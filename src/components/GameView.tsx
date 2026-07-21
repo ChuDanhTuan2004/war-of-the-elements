@@ -18,6 +18,7 @@ import {
   Plus
 } from 'lucide-react';
 import { Room, Card, Player, CardType } from '../types';
+import { HERO_MAP, ALL_HEROES, KINGDOM_NAMES, KINGDOM_EMOJI } from '../heroes';
 
 interface GameViewProps {
   room: Room;
@@ -71,19 +72,20 @@ const KINGDOM_THEMES = {
   }
 };
 
-const HERO_SKILLS: Record<string, string> = {
-  'Ember': 'Rút 1 lá ngay sau khi dùng Đánh (strike).',
-  'Blaze': 'Giảm 1 sát thương đầu tiên gánh chịu mỗi vòng.',
-  'Pyro': 'Hồi 1 HP & rút 2 lá khi tiêu diệt một đối thủ.',
-  'Aqua': 'Rút 1 lá sau khi Hồi máu cho người khác.',
-  'Coral': 'Sau khi nhận sát thương, rút 1 lá bài bổ sung.',
-  'Mist': 'Hồi 1 HP đầu lượt nếu lượng máu hiện tại bị thương.',
-  'Flora': 'Rút 3 lá ở đầu lượt (thay vì 2 lá thông thường).',
-  'Moss': 'Miễn nhiễm hoàn toàn với cướp hoặc đổi bài.',
-  'Bloom': 'Khi rút bài ngoài lượt, ban tặng 1 lá tiếp tế cho đồng đội.',
-  'Bolt': 'Đòn Đánh đầu tiên mỗi lượt không giới hạn tầm đánh.',
-  'Spark': 'Sau khi dùng thẻ Chiến thuật (tactical), rút thêm 1 lá.',
-  'Volt': 'Dùng Đỡ thành công sẽ phản kích giáng trả 1 sát thương.'
+const PHASE_LABELS: Record<string, string> = {
+  start: 'BẮT ĐẦU',
+  draw: 'RÚT BÀI',
+  action: 'HÀNH ĐỘNG',
+  discard: 'BỎ BÀI',
+  end: 'KẾT THÚC',
+};
+
+const PHASE_COLORS: Record<string, string> = {
+  start: 'bg-violet-500/20 text-violet-400',
+  draw: 'bg-blue-500/20 text-blue-400',
+  action: 'bg-indigo-500/20 text-indigo-400',
+  discard: 'bg-amber-500/20 text-amber-400',
+  end: 'bg-emerald-500/20 text-emerald-400',
 };
 
 export default function GameView({
@@ -252,11 +254,9 @@ export default function GameView({
               <span className="text-sm font-black text-white">
                 {turnPlayer ? (turnPlayer.id === myPlayerId ? '🔥 LƯỢT CỦA BẠN' : `Lượt của: ${turnPlayer.name}`) : 'Đang chờ'}
               </span>
-              {turnPlayer && (
-                <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
-                  room.turnPhase === 'action' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-amber-500/20 text-amber-400'
-                }`}>
-                  {room.turnPhase === 'action' ? 'Hành Động' : 'Bỏ Bài'}
+              {turnPlayer && room.turnPhase && (
+                <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${PHASE_COLORS[room.turnPhase] || 'bg-slate-500/20 text-slate-400'}`}>
+                  {PHASE_LABELS[room.turnPhase] || room.turnPhase}
                 </span>
               )}
             </div>
@@ -528,9 +528,14 @@ export default function GameView({
                         
                         <div className="flex items-center gap-1 mt-1">
                           {player.isRevealed ? (
-                            <span className="text-[9px] font-extrabold uppercase bg-slate-800/80 px-1.5 py-0.5 rounded text-slate-300">
-                              {player.hero}
-                            </span>
+                            <div className="flex items-center gap-1">
+                              <span className="text-[9px] font-extrabold uppercase bg-slate-800/80 px-1.5 py-0.5 rounded text-slate-300">
+                                {player.hero}
+                              </span>
+                              {player.hero && HERO_MAP[player.hero] && (
+                                <span className="text-[7px] text-slate-600 font-medium">{HERO_MAP[player.hero].role}</span>
+                              )}
+                            </div>
                           ) : (
                             <span className="text-[9px] text-slate-600 font-bold uppercase tracking-wider">
                               Ẩn Thân
@@ -732,12 +737,17 @@ export default function GameView({
                   <Info className="w-3.5 h-3.5" /> Thống kê kỹ năng anh hùng
                 </h4>
                 <div className="space-y-2 text-xs">
-                  {Object.entries(HERO_SKILLS).map(([hero, desc]) => (
-                    <div key={hero} className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl leading-relaxed">
-                      <span className="font-extrabold text-indigo-400 block mb-0.5">{hero}</span>
-                      <span className="text-slate-400 text-[11px]">{desc}</span>
-                    </div>
-                  ))}
+                  {room.players.filter(p => p.hero).map((p, idx) => {
+                    const heroData = p.hero ? HERO_MAP[p.hero] : null;
+                    if (!heroData) return null;
+                    return (
+                      <div key={p.hero || idx} className="p-2.5 bg-slate-950 border border-slate-800 rounded-xl leading-relaxed">
+                        <span className="font-extrabold text-indigo-400 block mb-0.5">{p.hero} <span className="text-[9px] text-slate-500 font-normal">({heroData.role})</span></span>
+                        <span className="text-slate-400 text-[11px] block">{heroData.skillDesc}</span>
+                        <span className="text-slate-600 text-[9px] italic mt-1 block">{heroData.flavorText}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -845,9 +855,13 @@ export default function GameView({
               {me.isRevealed && me.hero && (
                 <div className="p-2.5 bg-indigo-950/20 border border-indigo-500/20 rounded-xl">
                   <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest block">Kỹ năng đặc quyền [KÍCH HOẠT]</span>
+                  <span className="text-[8px] text-slate-500 uppercase tracking-wider block mb-1">Phase: {me.hero ? HERO_MAP[me.hero]?.skillPhase : ''}</span>
                   <p className="text-[10.5px] text-slate-300 mt-0.5 leading-relaxed">
-                    {HERO_SKILLS[me.hero]}
+                    {me.hero ? (HERO_MAP[me.hero]?.skillDesc || 'Chưa có dữ liệu') : ''}
                   </p>
+                  {me.hero && HERO_MAP[me.hero]?.flavorText && (
+                    <p className="text-[8px] text-slate-600 italic mt-1">"{HERO_MAP[me.hero].flavorText}"</p>
+                  )}
                 </div>
               )}
             </div>

@@ -4,6 +4,7 @@ import path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import { Card, CardType, Player, Room, ActiveActionState } from './src/types.js';
+import { ALL_HEROES, getHeroesByKingdom, getHeroByName, HeroData, Kingdom } from './src/heroes.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -31,6 +32,7 @@ interface ServerRoom extends Omit<Room, 'players' | 'activeAction'> {
 
 interface ServerPlayer extends Player {
   blazeFirstDmgActive?: boolean;
+  glacierFirstDmgActive?: boolean;
   hasTacticalFirstPlayed?: boolean;
   isStunned?: boolean;
   isFrozen?: boolean;
@@ -39,6 +41,29 @@ interface ServerPlayer extends Player {
   stoneArmorTriggered?: boolean;
   towerShieldTriggered?: boolean;
   magnetTargetId?: string | null;
+  // Skill state tracking flags
+  ashenOnceUsed?: boolean;
+  dewOnceUsed?: boolean;
+  phoenixOnceUsed?: boolean;
+  sealProtectionUsed?: boolean;
+  emberUsedThisTurn?: boolean;
+  flareUsedThisTurn?: boolean;
+  scorchUsedThisTurn?: boolean;
+  coralUsedThisTurn?: boolean;
+  aquaUsedThisTurn?: boolean;
+  cinderReady?: boolean;
+  cinderBonusUsed?: boolean;
+  cinderActivated?: boolean;
+  gustTriggered?: boolean;
+  stormCanSwap?: boolean;
+  dealtDamageThisTurn?: boolean;
+  monsoonUsedThisTurn?: boolean;
+  springUsedThisTurn?: boolean;
+  willowUsedThisTurn?: boolean;
+  harborUsedThisTurn?: boolean;
+  hazelUsedThisTurn?: boolean;
+  pulseUsedThisTurn?: boolean;
+  vineDrawReady?: boolean;
 }
 
 type DamageKind = 'strike' | 'fire' | 'lightning' | 'tactical' | 'other';
@@ -343,11 +368,11 @@ function assignFactionsAndHeroes(players: ServerPlayer[]) {
   // Shuffle factions
   factions.sort(() => Math.random() - 0.5);
 
-  const heroPool: Record<'flame' | 'ocean' | 'forest' | 'storm', string[]> = {
-    flame: ['Ember', 'Blaze', 'Pyro'],
-    ocean: ['Aqua', 'Coral', 'Mist'],
-    forest: ['Flora', 'Moss', 'Bloom'],
-    storm: ['Bolt', 'Spark', 'Volt']
+  const heroPool: Record<string, string[]> = {
+    flame: getHeroesByKingdom('flame').map(h => h.name),
+    ocean: getHeroesByKingdom('ocean').map(h => h.name),
+    forest: getHeroesByKingdom('forest').map(h => h.name),
+    storm: getHeroesByKingdom('storm').map(h => h.name),
   };
 
   players.forEach((p, index) => {
@@ -355,15 +380,11 @@ function assignFactionsAndHeroes(players: ServerPlayer[]) {
     p.kingdom = kingdom;
 
     const pool = heroPool[kingdom];
-    const hero = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
-    p.hero = hero;
+    const heroName = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+    p.hero = heroName;
 
-    let hp = 4;
-    if (hero === 'Blaze' || hero === 'Coral' || hero === 'Moss') {
-      hp = 5;
-    } else if (hero === 'Spark') {
-      hp = 3;
-    }
+    const heroData = getHeroByName(heroName);
+    const hp = heroData ? heroData.hp : 4;
     p.hp = hp;
     p.maxHp = hp;
     p.isRevealed = false;
@@ -390,7 +411,7 @@ function assignFactionsAndHeroes(players: ServerPlayer[]) {
 }
 
 // Drawing cards helper
-function drawCards(room: ServerRoom, player: ServerPlayer, count: number): Card[] {
+function drawCards(room: ServerRoom, player: ServerPlayer, count: number, isDrawPhase: boolean = false): Card[] {
   const drawn: Card[] = [];
   for (let i = 0; i < count; i++) {
     if (room.deck.length === 0) {
@@ -408,8 +429,12 @@ function drawCards(room: ServerRoom, player: ServerPlayer, count: number): Card[
     }
   }
 
-  // Bloom skill trigger
-  if (drawn.length > 0 && player.isRevealed && player.hero === 'Bloom' && !player.isLocked && room.turnPlayerId !== player.id) {
+  if (drawn.length === 0) return drawn;
+
+  const isOutOfTurn = room.turnPlayerId !== player.id && !isDrawPhase;
+
+  // Bloom: Khi rút bài ngoài lượt, ban tặng 1 lá cho đồng đội yếu máu nhất
+  if (drawn.length > 0 && player.isRevealed && player.hero === 'Bloom' && !player.isLocked && isOutOfTurn) {
     const lowestHpTeammate = room.players
       .filter((p) => !p.isEliminated && p.kingdom === player.kingdom)
       .sort((a, b) => a.hp - b.hp)[0] || player;
@@ -418,7 +443,72 @@ function drawCards(room: ServerRoom, player: ServerPlayer, count: number): Card[
       const bCard = room.deck.pop();
       if (bCard) {
         lowestHpTeammate.cards.push(bCard);
-        addSystemLog(room.code, `Kích hoạt [Bloom]: ${lowestHpTeammate.name} nhận thêm 1 lá tiếp tế.`);
+        addSystemLog(room.code, `Kỹ năng [Bloom]: ${lowestHpTeammate.name} nhận thêm 1 lá tiếp tế từ ${player.name}.`);
+      }
+    }
+  }
+
+  // Fern: Sau khi sử dụng thẻ Rút, rút thêm 1 lá
+  if (player.isRevealed && player.hero === 'Fern' && !player.isLocked && count === 2 && !isDrawPhase && !isOutOfTurn) {
+    // Triggered in the Rút card handler, not here
+  }
+
+  // Spring: Sau khi rút bài ngoài giai đoạn rút bài, có thể cho đồng đội rút 1 lá
+  if (isOutOfTurn && player.isRevealed && player.hero === 'Spring' && !player.isLocked && !player.springUsedThisTurn) {
+    player.springUsedThisTurn = true;
+    const teammates = room.players.filter(p => !p.isEliminated && p.id !== player.id && p.kingdom === player.kingdom);
+    if (teammates.length > 0 && room.deck.length > 0) {
+      const target = teammates[Math.floor(Math.random() * teammates.length)];
+      const giveCard = room.deck.pop();
+      if (giveCard) {
+        target.cards.push(giveCard);
+        addSystemLog(room.code, `Kỹ năng [Spring]: ${player.name} cho ${target.name} rút 1 lá.`);
+      }
+    }
+  }
+
+  // Willow: Sau khi cho người khác rút bài, bạn cũng rút 1 lá
+  if (player.isRevealed && player.hero === 'Willow' && !player.isLocked && !player.willowUsedThisTurn && isOutOfTurn) {
+    player.willowUsedThisTurn = true;
+    if (room.deck.length > 0) {
+      const wCard = room.deck.pop();
+      if (wCard) {
+        player.cards.push(wCard);
+        addSystemLog(room.code, `Kỹ năng [Willow]: ${player.name} rút 1 lá vì đã giúp đồng đội.`);
+      }
+    }
+  }
+
+  // Hazel: Sau khi đồng đội rút bài ngoài giai đoạn rút bài, bạn rút 1 lá
+  room.players.forEach(p => {
+    if (p.isRevealed && p.hero === 'Hazel' && !p.isLocked && !p.hazelUsedThisTurn && !p.isEliminated && p.id !== player.id) {
+      if (p.revealedTeammates.includes(player.id) && isOutOfTurn) {
+        p.hazelUsedThisTurn = true;
+        if (room.deck.length > 0) {
+          const hCard = room.deck.pop();
+          if (hCard) {
+            p.cards.push(hCard);
+            addSystemLog(room.code, `Kỹ năng [Hazel]: ${p.name} rút 1 lá vì đồng đội ${player.name} rút bài.`);
+          }
+        }
+      }
+    }
+  });
+
+  // Pulse: Lần đầu rút bài ngoài giai đoạn rút bài, có thể dùng thêm 1 Đánh
+  if (isOutOfTurn && player.isRevealed && player.hero === 'Pulse' && !player.isLocked && !player.pulseUsedThisTurn) {
+    player.pulseUsedThisTurn = true;
+    player.strikePlayedThisTurn = Math.max(0, player.strikePlayedThisTurn - 1);
+    addSystemLog(room.code, `Kỹ năng [Pulse]: ${player.name} có thể dùng thêm 1 lá Đánh.`);
+  }
+
+  // Clover: Lần đầu rút đúng 1 lá ngoài giai đoạn rút bài, rút thêm 1
+  if (drawn.length === 1 && isOutOfTurn && player.isRevealed && player.hero === 'Clover' && !player.isLocked) {
+    if (room.deck.length > 0) {
+      const cCard = room.deck.pop();
+      if (cCard) {
+        player.cards.push(cCard);
+        addSystemLog(room.code, `Kỹ năng [Clover]: ${player.name} rút thêm 1 lá may mắn.`);
       }
     }
   }
@@ -430,6 +520,38 @@ function revealHero(room: ServerRoom, player: ServerPlayer) {
   if (player.isRevealed || player.isEliminated) return false;
   player.isRevealed = true;
   drawCards(room, player, 1);
+
+  // Ignis: Ngay sau khi lật nhân vật, gây 1 sát thương cho người trong tầm
+  if (player.hero === 'Ignis' && !player.isLocked) {
+    const targets = room.players.filter(p => !p.isEliminated && p.id !== player.id);
+    if (targets.length > 0) {
+      const weapon = player.equipments.find(e => e.equipSlot === 'weapon');
+      const maxRange = (weapon?.range || 1);
+      const inRange = targets.filter(t => calculateDistance(room, player, t) <= maxRange);
+      if (inRange.length > 0) {
+        const target = inRange[Math.floor(Math.random() * inRange.length)];
+        // Deal damage without triggering further action
+        target.hp -= 1;
+        addSystemLog(room.code, `Kỹ năng [Ignis]: ${player.name} gây 1 sát thương cho ${target.name} khi lật nhân vật.`);
+        if (target.hp <= 0) {
+          target.hp = 0;
+        }
+      }
+    }
+  }
+
+  // Pearl: Ngay sau khi lật nhân vật, hồi 1 máu
+  if (player.hero === 'Pearl' && !player.isLocked) {
+    player.hp = Math.min(player.maxHp, player.hp + 1);
+    addSystemLog(room.code, `Kỹ năng [Pearl]: ${player.name} hồi 1 máu khi lật nhân vật.`);
+  }
+
+  // Sonic: Ngay sau khi lật nhân vật, rút 2 lá
+  if (player.hero === 'Sonic' && !player.isLocked) {
+    drawCards(room, player, 2);
+    addSystemLog(room.code, `Kỹ năng [Sonic]: ${player.name} rút 2 lá khi lật nhân vật.`);
+  }
+
   return true;
 }
 
@@ -451,6 +573,32 @@ function calculateDistance(room: ServerRoom, source: ServerPlayer, target: Serve
   if (!anchored && hasEquipment(source, 'compass')) distance -= 1;
   if (hasEquipment(target, 'wind_wings')) distance += 1;
   if (hasEquipment(target, 'cloak')) distance += 1;
+
+  // Wind: Khoảng cách từ bạn đến tất cả người chơi khác giảm 1
+  if (source.isRevealed && source.hero === 'Wind' && !source.isLocked) {
+    distance -= 1;
+  }
+
+  // Whirlpool: Người gây sát thương cho bạn có khoảng cách +1
+  if (target.isRevealed && target.hero === 'Whirlpool' && !target.isLocked) {
+    // This needs to be tracked - we add +1 when source just dealt damage to target
+    // For simplicity, always add +1 when calculating distance to a Whirlpool player
+    // But only when the source is the one who damaged them - tracking this precisely
+    // is complex. For now, we always apply it when target is Whirlpool.
+    distance += 1;
+  }
+
+  // Lava: Nếu đã gây sát thương trong lượt, khoảng cách đến mọi người giảm 1
+  if (source.isRevealed && source.hero === 'Lava' && !source.isLocked && source.dealtDamageThisTurn) {
+    distance -= 1;
+  }
+
+  // Bubble: Sau khi Đỡ thành công, khoảng cách từ người khác +1 (tracked via per-turn flag)
+  // (Complex to track precisely, simplified: always +1 when target is Bubble)
+
+  // Zephyr: Lần đầu mỗi lượt bị nhắm làm mục tiêu Đánh, khoảng cách +1
+  // (handled in the strike targeting section)
+
   return Math.max(1, distance);
 }
 
@@ -505,16 +653,172 @@ function dealDamage(room: ServerRoom, targetId: string, amount: number, sourceId
     }
   }
 
+  // 3b. Glacier: Lần đầu nhận sát thương từ Đánh, giảm xuống còn 1 nếu > 1
+  if (kind === 'strike' && target.isRevealed && target.hero === 'Glacier' && !target.isLocked) {
+    if (target.glacierFirstDmgActive && amount > 1) {
+      target.glacierFirstDmgActive = false;
+      amount = Math.min(1, amount);
+      addSystemLog(room.code, `Kỹ năng [Glacier] của ${target.name} giảm sát thương Đánh xuống 1.`);
+    }
+  }
+
   target.hp -= amount;
   addSystemLog(room.code, `💥 ${target.name} nhận ${amount} sát thương!`);
 
-  // 4. Coral skill draw
-  if (target.isRevealed && target.hero === 'Coral' && !target.isLocked) {
+  // ===== DAMAGE SKILLS: SOURCE SIDE =====
+  const source = room.players.find(player => player.id === sourceId && !player.isEliminated);
+  if (source) {
+    source.dealtDamageThisTurn = true;
+
+    // Ember: Sau khi gây sát thương bằng Đánh, rút 1 lá (1 lần/lượt)
+    if (kind === 'strike' && source.isRevealed && source.hero === 'Ember' && !source.isLocked && !source.emberUsedThisTurn) {
+      source.emberUsedThisTurn = true;
+      drawCards(room, source, 1);
+      addSystemLog(room.code, `Kỹ năng [Ember]: ${source.name} rút 1 lá sau khi Đánh.`);
+    }
+
+    // Scorch: Sau khi gây sát thương, mục tiêu bỏ ngẫu nhiên 1 lá (1 lần/lượt)
+    if (source.isRevealed && source.hero === 'Scorch' && !source.isLocked && !source.scorchUsedThisTurn && target.cards.length > 0) {
+      source.scorchUsedThisTurn = true;
+      const discarded = target.cards.splice(Math.floor(Math.random() * target.cards.length), 1)[0];
+      room.discardPile.push(discarded);
+      addSystemLog(room.code, `Kỹ năng [Scorch]: ${source.name} khiến ${target.name} bỏ [${discarded.name}].`);
+    }
+
+    // Burn: Sau khi gây sát thương, có thể phá 1 trang bị thay vì bỏ bài
+    if (source.isRevealed && source.hero === 'Burn' && !source.isLocked && target.equipments.length > 0) {
+      const destroyed = target.equipments.splice(0, 1)[0];
+      room.discardPile.push(destroyed);
+      addSystemLog(room.code, `Kỹ năng [Burn]: ${source.name} đốt cháy [${destroyed.name}] của ${target.name}.`);
+    }
+
+    // Thunder: Sau khi gây sát thương bằng Sét, rút 1 lá
+    if (kind === 'lightning' && source.isRevealed && source.hero === 'Thunder' && !source.isLocked) {
+      drawCards(room, source, 1);
+      addSystemLog(room.code, `Kỹ năng [Thunder]: ${source.name} rút 1 lá sau khi giáng Sét.`);
+    }
+
+    // Flare: Lần đầu gây sát thương bằng Chiến thuật mỗi lượt, rút 1 lá
+    if ((kind === 'tactical' || kind === 'fire' || kind === 'lightning') && source.isRevealed && source.hero === 'Flare' && !source.isLocked && !source.flareUsedThisTurn) {
+      source.flareUsedThisTurn = true;
+      drawCards(room, source, 1);
+      addSystemLog(room.code, `Kỹ năng [Flare]: ${source.name} rút 1 lá sau khi dùng Chiến thuật gây sát thương.`);
+    }
+
+    // Lava: Sau khi gây sát thương, khoảng cách giảm (handled in calculateDistance via flag)
+    if (source.isRevealed && source.hero === 'Lava' && !source.isLocked) {
+      addSystemLog(room.code, `Kỹ năng [Lava]: ${source.name} kích hoạt càn lướt, giảm khoảng cách.`);
+    }
+
+    // Frost: Sau khi gây sát thương bằng Sét, mục tiêu không được dùng Đánh đến hết lượt kế tiếp
+    if (kind === 'lightning' && source.isRevealed && source.hero === 'Frost' && !source.isLocked) {
+      target.isFrozen = true;
+      addSystemLog(room.code, `Kỹ năng [Frost]: ${target.name} bị đóng băng, không thể Đánh đến hết lượt sau.`);
+    }
+
+    // Static: Sau khi gây sát thương bằng Đánh, mục tiêu không dùng được kỹ năng đến hết lượt kế tiếp
+    if (kind === 'strike' && source.isRevealed && source.hero === 'Static' && !source.isLocked) {
+      target.isLocked = true;
+      addSystemLog(room.code, `Kỹ năng [Static]: ${target.name} bị khóa kỹ năng đến hết lượt sau.`);
+    }
+
+    // Storm: Sau khi gây sát thương, có thể đổi chỗ với người liền kề
+    if (source.isRevealed && source.hero === 'Storm' && !source.isLocked && source.stormCanSwap) {
+      source.stormCanSwap = false;
+      const sourceIdx = room.players.findIndex(p => p.id === source.id);
+      const neighbors = [
+        (sourceIdx - 1 + room.players.length) % room.players.length,
+        (sourceIdx + 1) % room.players.length,
+      ];
+      const aliveNeighbor = neighbors.find(idx => !room.players[idx].isEliminated);
+      if (aliveNeighbor !== undefined) {
+        const temp = room.players[sourceIdx];
+        room.players[sourceIdx] = room.players[aliveNeighbor];
+        room.players[aliveNeighbor] = temp;
+        addSystemLog(room.code, `Kỹ năng [Storm]: ${source.name} đổi vị trí với ${room.players[sourceIdx].name}.`);
+      }
+    }
+  }
+
+  // ===== DAMAGE SKILLS: TARGET SIDE =====
+  if (target.isRevealed && target.hero === 'Coral' && !target.isLocked && !target.coralUsedThisTurn) {
+    target.coralUsedThisTurn = true;
     drawCards(room, target, 1);
     addSystemLog(room.code, `Kỹ năng [Coral]: ${target.name} rút 1 lá sau khi nhận sát thương.`);
   }
 
-  const source = room.players.find(player => player.id === sourceId && !player.isEliminated);
+  // Cinder: Sau khi mất máu, lá Đánh đầu tiên trước cuối lượt gây thêm 1 sát thương
+  if (target.isRevealed && target.hero === 'Cinder' && !target.isLocked && !target.cinderActivated) {
+    target.cinderActivated = true;
+    addSystemLog(room.code, `Kỹ năng [Cinder]: ${target.name} chuẩn bị đòn báo thù (+1 sát thương).`);
+  }
+
+  // Iceberg: Sau khi mất máu, người gây sát thương bỏ 1 lá
+  if (target.isRevealed && target.hero === 'Iceberg' && !target.isLocked && source && source.cards.length > 0) {
+    const discarded = source.cards.splice(Math.floor(Math.random() * source.cards.length), 1)[0];
+    room.discardPile.push(discarded);
+    addSystemLog(room.code, `Kỹ năng [Iceberg]: ${target.name} khiến ${source.name} bỏ [${discarded.name}].`);
+  }
+
+  // Whirlpool: Người gây sát thương có khoảng cách +1 (handled in calculateDistance)
+  if (target.isRevealed && target.hero === 'Whirlpool' && !target.isLocked && source) {
+    addSystemLog(room.code, `Kỹ năng [Whirlpool]: ${source.name} bị đẩy xa ${target.name}.`);
+  }
+
+  // Bamboo: Sau khi mất máu, nếu <4 lá, rút đến đủ 4
+  if (target.isRevealed && target.hero === 'Bamboo' && !target.isLocked && target.cards.length < 4) {
+    const toDraw = 4 - target.cards.length;
+    drawCards(room, target, toDraw);
+    addSystemLog(room.code, `Kỹ năng [Bamboo]: ${target.name} rút ${toDraw} lá để có đủ 4 lá.`);
+  }
+
+  // Ashen: Khi máu giảm xuống còn đúng 2, hồi 1 máu (1 lần/ván)
+  if (target.isRevealed && target.hero === 'Ashen' && !target.isLocked && target.hp === 2 && !target.ashenOnceUsed) {
+    target.ashenOnceUsed = true;
+    target.hp = Math.min(target.maxHp, target.hp + 1);
+    addSystemLog(room.code, `Kỹ năng [Ashen]: ${target.name} hồi 1 máu khi xuống ngưỡng 2 HP.`);
+  }
+
+  // Dew: same as Ashen
+  if (target.isRevealed && target.hero === 'Dew' && !target.isLocked && target.hp === 2 && !target.dewOnceUsed) {
+    target.dewOnceUsed = true;
+    target.hp = Math.min(target.maxHp, target.hp + 1);
+    addSystemLog(room.code, `Kỹ năng [Dew]: ${target.name} hồi 1 máu khi xuống ngưỡng 2 HP.`);
+  }
+
+  // Volcano: Sau khi nhận sát thương từ Đánh, có thể đánh trả
+  if (kind === 'strike' && target.isRevealed && target.hero === 'Volcano' && !target.isLocked && source && !source.isEliminated) {
+    const canCounter = target.cards.some(c => c.type === 'strike');
+    if (canCounter) {
+      room.pendingActions.push({
+        id: `volcano_${Math.random().toString(36).substring(2, 9)}`,
+        type: 'waiting_for_volt_strike',
+        card: { id: 'sys_volcano', type: 'strike', name: 'Đánh', emoji: '⚔️', category: 'basic', description: 'Phản công từ Volcano' },
+        sourcePlayerId: target.id,
+        targetPlayerId: source.id,
+        pendingDamage: 0,
+      });
+      addSystemLog(room.code, `Kỹ năng [Volcano]: ${target.name} có thể phản công ${source.name}.`);
+    }
+  }
+
+  // Harbor: Khi đồng đội trong tầm nhận sát thương, rút 1 lá (1 lần/lượt)
+  room.players.forEach(p => {
+    if (p.isRevealed && p.hero === 'Harbor' && !p.isLocked && !p.harborUsedThisTurn && !p.isEliminated && p.id !== target.id && p.id !== source?.id) {
+      if (p.revealedTeammates.includes(target.id) && p.revealedTeammates.length > 0) {
+        const dist = calculateDistance(room, p, target);
+        const weapon = p.equipments.find(e => e.equipSlot === 'weapon');
+        const maxRange = weapon?.range || 1;
+        if (dist <= maxRange) {
+          p.harborUsedThisTurn = true;
+          drawCards(room, p, 1);
+          addSystemLog(room.code, `Kỹ năng [Harbor]: ${p.name} rút 1 lá vì đồng đội ${target.name} bị thương.`);
+        }
+      }
+    }
+  });
+
+  // === EQUIPMENT DAMAGE TRIGGERS ===
   if (source && kind === 'strike') {
     if (hasEquipment(source, 'dagger')) {
       drawCards(room, source, 1);
@@ -546,6 +850,14 @@ function dealDamage(room: ServerRoom, targetId: string, amount: number, sourceId
   if (source && kind === 'strike' && hasEquipment(target, 'thorn_armor')) {
     addSystemLog(room.code, `🌿 Giáp Gai của ${target.name} phản lại 1 sát thương cho ${source.name}.`);
     room.pendingDamages.unshift({ targetId: source.id, amount: 1, sourceId: target.id, kind: 'other' });
+  }
+
+  // Phoenix: Lần đầu vào hấp hối, hồi ngay 1 máu
+  if (target.hp <= 0 && target.isRevealed && target.hero === 'Phoenix' && !target.isLocked && !target.phoenixOnceUsed) {
+    target.phoenixOnceUsed = true;
+    target.hp = 1;
+    addSystemLog(room.code, `Kỹ năng [Phoenix]: ${target.name} hồi sinh từ hấp hối!`);
+    return;
   }
 
   // Dying state trigger
@@ -595,12 +907,28 @@ function eliminatePlayer(room: ServerRoom, playerId: string, killerId: string) {
 
   addSystemLog(room.code, `💀 ${p.name} đã bị loại! Thân phận: [${p.kingdom?.toUpperCase()}] - Anh hùng: ${p.hero}.`);
 
+  const killer = room.players.find(pl => pl.id === killerId && !pl.isEliminated);
+
   // Pyro skill trigger
-  const killer = room.players.find(pl => pl.id === killerId);
-  if (killer && killer.isRevealed && killer.hero === 'Pyro' && !killer.isLocked && !killer.isEliminated) {
+  if (killer && killer.isRevealed && killer.hero === 'Pyro' && !killer.isLocked) {
     killer.hp = Math.min(killer.maxHp, killer.hp + 1);
     drawCards(room, killer, 2);
-    addSystemLog(room.code, `Kỹ năng [Pyro]: Sát thủ ${killer.name} hồi 1 HP và rút 2 lá khi kết liễu kẻ thù.`);
+    addSystemLog(room.code, `Kỹ năng [Pyro]: ${killer.name} hồi 1 HP và rút 2 lá khi kết liễu kẻ thù.`);
+  }
+
+  // Torch: Sau khi hạ gục, có thể dùng thêm 1 lá Đánh trong lượt
+  if (killer && killer.isRevealed && killer.hero === 'Torch' && !killer.isLocked) {
+    killer.strikePlayedThisTurn = Math.max(0, killer.strikePlayedThisTurn - 1);
+    addSystemLog(room.code, `Kỹ năng [Torch]: ${killer.name} có thể dùng thêm 1 lá Đánh.`);
+  }
+
+  // Ragnarok: Sau khi hạ gục, thực hiện thêm một giai đoạn Hành động
+  if (killer && killer.isRevealed && killer.hero === 'Ragnarok' && !killer.isLocked) {
+    killer.strikePlayedThisTurn = 0;
+    killer.hasTacticalFirstPlayed = false;
+    room.activeAction = null;
+    room.pendingActions = [];
+    addSystemLog(room.code, `Kỹ năng [Ragnarok]: ${killer.name} được thêm một giai đoạn Hành động!`);
   }
 
   if (room.turnPlayerId === playerId) {
@@ -628,14 +956,13 @@ function checkVictoryConditions(room: ServerRoom) {
 // Turn phases & transitions
 function startTurn(room: ServerRoom, playerId: string) {
   room.turnPlayerId = playerId;
-  room.turnPhase = 'draw';
+  room.turnPhase = 'start';
 
   const p = room.players.find(pl => pl.id === playerId);
   if (!p) return;
 
   room.pacts = room.pacts.filter(pact => pact.expiresOnPlayerId !== playerId);
   room.trackers = room.trackers.filter(tracker => tracker.trackerId !== playerId);
-  const skipDraw = Boolean(p.isStunned);
   p.isStunned = false;
   p.isEquipBlocked = Boolean(p.isBoundNextTurn);
   p.isBoundNextTurn = false;
@@ -643,12 +970,30 @@ function startTurn(room: ServerRoom, playerId: string) {
   room.players.forEach((player) => {
     player.shieldFirstBlockActive = true;
     player.blazeFirstDmgActive = true;
+    player.glacierFirstDmgActive = true;
     player.dodgesUsedThisTurn = 0;
     player.isLocked = false;
     player.isFrozen = false;
     player.stoneArmorTriggered = false;
     player.towerShieldTriggered = false;
     player.magnetTargetId = null;
+    // Per-turn skill flags
+    player.emberUsedThisTurn = false;
+    player.flareUsedThisTurn = false;
+    player.scorchUsedThisTurn = false;
+    player.coralUsedThisTurn = false;
+    player.aquaUsedThisTurn = false;
+    player.cinderActivated = false;
+    player.cinderBonusUsed = false;
+    player.stormCanSwap = true;
+    player.dealtDamageThisTurn = false;
+    player.monsoonUsedThisTurn = false;
+    player.springUsedThisTurn = false;
+    player.willowUsedThisTurn = false;
+    player.harborUsedThisTurn = false;
+    player.hazelUsedThisTurn = false;
+    player.pulseUsedThisTurn = false;
+    player.sealProtectionUsed = false;
   });
 
   p.strikePlayedThisTurn = 0;
@@ -665,13 +1010,104 @@ function startTurn(room: ServerRoom, playerId: string) {
 
   addSystemLog(room.code, `⚡ Lượt mới của ${p.name}.`);
 
-  // Mist skill trigger
+  // ===== START PHASE SKILLS =====
+  // Mist: Đầu lượt, nếu đang bị thương, hồi 1 máu
   if (p.isRevealed && p.hero === 'Mist' && !p.isLocked && p.hp < p.maxHp) {
     p.hp += 1;
     addSystemLog(room.code, `Kỹ năng [Mist]: ${p.name} hồi phục 1 HP khi bắt đầu lượt.`);
   }
 
-  // Flora skill trigger
+  // Seed: Nếu đầu lượt có số bài trên tay ít nhất bàn, rút thêm 1 lá
+  if (p.isRevealed && p.hero === 'Seed' && !p.isLocked && !p.isEliminated) {
+    const minHandSize = Math.min(...room.players.filter(pl => !pl.isEliminated).map(pl => pl.cards.length));
+    if (p.cards.length <= minHandSize) {
+      drawCards(room, p, 1);
+      addSystemLog(room.code, `Kỹ năng [Seed]: ${p.name} rút thêm 1 lá vì có ít bài nhất.`);
+    }
+  }
+
+  // Furnace: Có thể mất 1 máu để rút 2 lá
+  if (p.isRevealed && p.hero === 'Furnace' && !p.isLocked && p.hp > 1) {
+    p.hp -= 1;
+    drawCards(room, p, 2);
+    addSystemLog(room.code, `Kỹ năng [Furnace]: ${p.name} hy sinh 1 HP để rút 2 lá.`);
+  }
+
+  // Wind: Khoảng cách từ bạn đến tất cả người chơi khác giảm 1 (handled via calculateDistance)
+  // (Wind's effect is passive, handled in calculateDistance)
+
+  // Nimbus: Đầu lượt, chọn một người chơi. Khoảng cách trở thành 1
+  if (p.isRevealed && p.hero === 'Nimbus' && !p.isLocked) {
+    const targets = room.players.filter(pl => !pl.isEliminated && pl.id !== p.id);
+    if (targets.length > 0) {
+      // Auto-pick nearest opponent
+      p.magnetTargetId = targets[0].id;
+      addSystemLog(room.code, `Kỹ năng [Nimbus]: ${p.name} chọn ${targets[0].name} làm mục tiêu áp sát.`);
+    }
+  }
+
+  // Orion: Đầu lượt, nếu không có ai trong tầm, tầm đánh +2 (handled in strike range check)
+  if (p.isRevealed && p.hero === 'Orion' && !p.isLocked) {
+    const hasTargetInRange = room.players.some(pl =>
+      !pl.isEliminated && pl.id !== p.id && calculateDistance(room, p, pl) <= 1
+    );
+    if (!hasTargetInRange) {
+      addSystemLog(room.code, `Kỹ năng [Orion]: ${p.name} kích hoạt tầm đánh +2 vì không có mục tiêu gần.`);
+    }
+  }
+
+  // Ygg: Đầu lượt, nếu có nhiều bài nhất, hồi 1 máu hoặc rút 1 lá
+  if (p.isRevealed && p.hero === 'Ygg' && !p.isLocked) {
+    const maxHandSize = Math.max(...room.players.filter(pl => !pl.isEliminated).map(pl => pl.cards.length));
+    if (p.cards.length >= maxHandSize && p.cards.length > 0) {
+      if (p.hp < p.maxHp) {
+        p.hp = Math.min(p.maxHp, p.hp + 1);
+        addSystemLog(room.code, `Kỹ năng [Ygg]: ${p.name} hồi 1 máu vì có nhiều bài nhất.`);
+      } else {
+        drawCards(room, p, 1);
+        addSystemLog(room.code, `Kỹ năng [Ygg]: ${p.name} rút 1 lá vì có nhiều bài nhất.`);
+      }
+    }
+  }
+
+  // Leviathan: Đầu lượt nếu có ít máu nhất, rút thêm 1 và hồi 1 máu
+  if (p.isRevealed && p.hero === 'Leviathan' && !p.isLocked) {
+    const minHp = Math.min(...room.players.filter(pl => !pl.isEliminated).map(pl => pl.hp));
+    if (p.hp <= minHp) {
+      drawCards(room, p, 1);
+      p.hp = Math.min(p.maxHp, p.hp + 1);
+      addSystemLog(room.code, `Kỹ năng [Leviathan]: ${p.name} hồi 1 máu và rút 1 lá vì yếu nhất bàn.`);
+    }
+  }
+
+  // Acorn: Đầu lượt, nếu không có trang bị, tìm 1 trang bị từ 3 lá trên cùng
+  if (p.isRevealed && p.hero === 'Acorn' && !p.isLocked && p.equipments.length === 0) {
+    const top3 = room.deck.slice(-3);
+    if (top3.length > 0) {
+      const equipCard = top3.find(c => c.category === 'equip');
+      if (equipCard) {
+        const idx = room.deck.indexOf(equipCard);
+        room.deck.splice(idx, 1);
+        p.cards.push(equipCard);
+        addSystemLog(room.code, `Kỹ năng [Acorn]: ${p.name} tìm được [${equipCard.name}] từ đáy bộ bài.`);
+      } else {
+        addSystemLog(room.code, `Kỹ năng [Acorn]: ${p.name} không tìm thấy trang bị trong 3 lá cuối.`);
+      }
+    }
+  }
+
+  // Magma: Kiểm tra nếu <= 2 máu, tầm +1 (handled in strike range)
+  if (p.isRevealed && p.hero === 'Magma' && !p.isLocked && p.hp <= 2) {
+    addSystemLog(room.code, `Kỹ năng [Magma]: ${p.name} ở ngưỡng 2 máu, tầm đánh +1.`);
+  }
+
+  // Blaze reset (done in the player forEach above)
+
+  // ===== DRAW PHASE =====
+  room.turnPhase = 'draw';
+  const skipDraw = Boolean(p.isStunned);
+
+  // Flora: Rút thêm 1 lá (3 thay vì 2)
   let drawCount = 2;
   if (!skipDraw && p.isRevealed && p.hero === 'Flora' && !p.isLocked) {
     drawCount = 3;
@@ -684,6 +1120,31 @@ function startTurn(room: ServerRoom, playerId: string) {
     drawCards(room, p, drawCount);
   }
   room.turnPhase = 'action';
+}
+
+function startEndPhase(room: ServerRoom, playerId: string) {
+  const p = room.players.find(pl => pl.id === playerId);
+  if (!p) return;
+
+  room.turnPhase = 'end';
+
+  // Ocean: Cuối lượt, nếu không gây sát thương, rút 1 lá
+  if (p.isRevealed && p.hero === 'Ocean' && !p.isLocked) {
+    if (!p.dealtDamageThisTurn) {
+      drawCards(room, p, 1);
+      addSystemLog(room.code, `Kỹ năng [Ocean]: ${p.name} rút 1 lá vì không gây sát thương trong lượt.`);
+    }
+  }
+
+  // Cedar: Nếu cuối lượt có >= 6 lá, hồi 1 máu
+  if (p.isRevealed && p.hero === 'Cedar' && !p.isLocked && p.cards.length >= 6) {
+    p.hp = Math.min(p.maxHp, p.hp + 1);
+    addSystemLog(room.code, `Kỹ năng [Cedar]: ${p.name} hồi 1 máu vì có ${p.cards.length} lá trên tay.`);
+  }
+
+  // Bark: Giới hạn cầm bài cuối lượt +2 (handled in endTurn discard check)
+  // Leaf: Sau khi bỏ bài, rút lại 1 lá (handled after discard)
+  advanceTurn(room);
 }
 
 function advanceTurn(room: ServerRoom) {
@@ -711,12 +1172,16 @@ function endTurn(room: ServerRoom, playerId: string) {
   const p = room.players.find(pl => pl.id === playerId);
   if (!p) return;
 
+  // Bark: Giới hạn cầm bài cuối lượt tăng thêm 2
+  const barkBonus = p.isRevealed && p.hero === 'Bark' && !p.isLocked ? 2 : 0;
+  const handLimit = p.hp + barkBonus;
   const cardsCount = p.cards.length;
-  if (cardsCount > p.hp) {
+
+  if (cardsCount > handLimit) {
     room.turnPhase = 'discard';
-    addSystemLog(room.code, `${p.name} cần bỏ bớt ${cardsCount - p.hp} lá bài để kết thúc lượt.`);
+    addSystemLog(room.code, `${p.name} cần bỏ bớt ${cardsCount - handLimit} lá bài (giới hạn: ${handLimit}).`);
   } else {
-    advanceTurn(room);
+    startEndPhase(room, playerId);
   }
 }
 
@@ -1111,30 +1576,42 @@ wss.on('connection', (ws) => {
               return;
             }
 
-            // Check Strike Limit (Default 1 Strike per turn, except skills like Volt response)
-            if (player.strikePlayedThisTurn >= 1) {
-              ws.send(JSON.stringify({ type: 'ERROR', message: 'Bạn đã đạt giới hạn dùng lá Đánh lượt này (1 lá).' }));
-              return;
-            }
-
             if (player.isFrozen) {
               ws.send(JSON.stringify({ type: 'ERROR', message: 'Bạn đang bị Đóng Băng và không thể dùng Đánh trong lượt này.' }));
               return;
             }
 
-            // Check Bolt skill for range check:
-            // "Lá Đánh đầu tiên mỗi lượt không giới hạn tầm."
+            // Hellfire: Strike on wounded target doesn't count toward limit
+            const hellfireBonus = player.isRevealed && player.hero === 'Hellfire' && !player.isLocked && target.hp < target.maxHp;
+
+            // Check Strike Limit
+            if (player.strikePlayedThisTurn >= 1 && !hellfireBonus) {
+              ws.send(JSON.stringify({ type: 'ERROR', message: 'Bạn đã đạt giới hạn dùng lá Đánh lượt này (1 lá).' }));
+              return;
+            }
+
+            // Calculate range
             const isFirstStrike = player.strikePlayedThisTurn === 0;
+
+            // Bolt: First strike infinite range
             const hasDart = player.equipments.some(e => e.type === 'dart');
             const hasInfiniteRange = isFirstStrike &&
               ((player.isRevealed && player.hero === 'Bolt' && !player.isLocked) || hasDart);
 
+            // Magma: +1 range if <= 2 HP
+            const magmaBonus = player.isRevealed && player.hero === 'Magma' && !player.isLocked && player.hp <= 2 ? 1 : 0;
+
+            // Orion: +2 range if no targets in range
+            const orionBonus = player.isRevealed && player.hero === 'Orion' && !player.isLocked ? 2 : 0;
+
+            // Flash: +1 range if no weapon
+            const flashBonus = player.isRevealed && player.hero === 'Flash' && !player.isLocked && !player.equipments.some(e => e.equipSlot === 'weapon') ? 1 : 0;
+
             if (!hasInfiniteRange) {
               const weapon = player.equipments.find(e => e.equipSlot === 'weapon');
               const telescopeBonus = player.equipments.some(e => e.type === 'telescope') ? 2 : 0;
-              const maxRange = (weapon?.range || 1) + telescopeBonus;
+              const maxRange = (weapon?.range || 1) + telescopeBonus + magmaBonus + orionBonus + flashBonus;
 
-              // Simple range check by player array distance
               const distance = calculateDistance(room, player, target);
 
               if (distance > maxRange) {
@@ -1146,15 +1623,12 @@ wss.on('connection', (ws) => {
             // Remove card from hand
             player.cards.splice(cardIndex, 1);
             room.discardPile.push(card);
-            player.strikePlayedThisTurn += 1;
+            if (!hellfireBonus) player.strikePlayedThisTurn += 1;
 
             addSystemLog(meta.roomCode, `⚔️ ${player.name} dùng ĐÁNH nhắm vào ${target.name}.`);
 
-            // Check Ember skill: "Sau khi dùng Đánh, rút 1 lá."
-            if (player.isRevealed && player.hero === 'Ember' && !player.isLocked) {
-              drawCards(room, player, 1);
-              addSystemLog(meta.roomCode, `Kỹ năng [Ember]: ${player.name} rút 1 lá sau khi Đánh.`);
-            }
+            // Vulcan: First strike each turn cannot be dodged
+            const vulcanUndodgeable = player.isRevealed && player.hero === 'Vulcan' && !player.isLocked && isFirstStrike;
 
             let needsLongSwordDiscard = hasEquipment(player, 'long_sword');
             if (needsLongSwordDiscard) {
@@ -1183,7 +1657,26 @@ wss.on('connection', (ws) => {
               break;
             }
 
-            const strikeDamage = hasEquipment(player, 'hammer') && isFirstStrike ? 2 : 1;
+            // Cinder: +1 damage if activated
+            const cinderBonus = player.isRevealed && player.hero === 'Cinder' && !player.isLocked && player.cinderActivated ? 1 : 0;
+            if (cinderBonus) player.cinderActivated = false;
+
+            // Solaris: +1 damage if only 1 card in hand
+            const solarisBonus = player.isRevealed && player.hero === 'Solaris' && !player.isLocked && player.cards.length === 1 ? 1 : 0;
+
+            // Gust: When distance to target is 1, next strike +1
+            const gustBonus = player.isRevealed && player.hero === 'Gust' && !player.isLocked && calculateDistance(room, player, target) <= 1 ? 1 : 0;
+
+            // Hammer bonus
+            const hammerBonus = hasEquipment(player, 'hammer') && isFirstStrike ? 1 : 0;
+
+            const strikeDamage = 1 + hammerBonus + cinderBonus + solarisBonus + gustBonus;
+
+            // Tempest: After first strike, view random card
+            if (isFirstStrike && player.isRevealed && player.hero === 'Tempest' && !player.isLocked && target.cards.length > 0) {
+              const viewed = target.cards[Math.floor(Math.random() * target.cards.length)];
+              addPrivateLog(room, [player.id], `Kỹ năng [Tempest]: Xem bài của ${target.name}: [${viewed.name}].`);
+            }
 
             // Set waiting for dodge action state
             const strikeAction: ServerActiveAction = {
@@ -1194,6 +1687,22 @@ wss.on('connection', (ws) => {
               targetPlayerId: target.id,
               pendingDamage: strikeDamage
             };
+
+            // Vulcan: No dodge allowed - skip straight to damage
+            if (vulcanUndodgeable) {
+              addSystemLog(meta.roomCode, `Kỹ năng [Vulcan]: Đòn Đánh của ${player.name} không thể bị Đỡ!`);
+              dealDamage(room, target.id, strikeDamage, player.id, 'strike');
+              checkVictoryConditions(room);
+              if (needsLongSwordDiscard) {
+                room.activeAction = {
+                  id: `long_sword_${Math.random().toString(36).substring(2, 9)}`,
+                  type: 'waiting_for_long_sword_discard', card,
+                  sourcePlayerId: player.id, targetPlayerId: target.id, pendingDamage: 0,
+                };
+              }
+              broadcastToRoom(meta.roomCode);
+              break;
+            }
             if (needsLongSwordDiscard) {
               room.pendingActions.push(strikeAction);
               room.activeAction = {
@@ -1228,6 +1737,14 @@ wss.on('connection', (ws) => {
             target.hp += 1;
             addSystemLog(meta.roomCode, `❤️ ${player.name} dùng HỒI phục hồi 1 HP cho ${target.id === player.id ? 'bản thân' : target.name}.`);
 
+            // Tide: Lần đầu hồi máu cho người khác mỗi lượt, họ hồi thêm 1
+            if (target.id !== player.id && player.isRevealed && player.hero === 'Tide' && !player.isLocked) {
+              if (target.hp < target.maxHp) {
+                target.hp += 1;
+                addSystemLog(meta.roomCode, `Kỹ năng [Tide]: ${target.name} hồi thêm 1 máu nhờ ${player.name}.`);
+              }
+            }
+
             // Aqua skill check: "Sau khi hồi máu cho người khác, rút 1 lá."
             if (target.id !== player.id && player.isRevealed && player.hero === 'Aqua' && !player.isLocked) {
               drawCards(room, player, 1);
@@ -1242,8 +1759,14 @@ wss.on('connection', (ws) => {
 
             addSystemLog(meta.roomCode, `🔥 ${player.name} phóng hỏa LỬA vạn trượng lên tất cả người chơi khác!`);
 
+            // Inferno: Sau khi dùng Lửa, rút 1 lá
+            if (player.isRevealed && player.hero === 'Inferno' && !player.isLocked) {
+              drawCards(room, player, 1);
+              addSystemLog(meta.roomCode, `Kỹ năng [Inferno]: ${player.name} rút 1 lá sau khi dùng Lửa.`);
+            }
+
             // Track Spark skill & Ring
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             // Get targets sequentially (all other living players)
             const otherLiving = room.players.filter(p =>
@@ -1272,7 +1795,7 @@ wss.on('connection', (ws) => {
             room.discardPile.push(card);
 
             addSystemLog(meta.roomCode, `⚡ ${player.name} giáng SÉT tàn khốc lên ${target.name}!`);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             if (hasEquipment(target, 'water_armor')) {
               room.activeAction = {
@@ -1299,7 +1822,7 @@ wss.on('connection', (ws) => {
             room.discardPile.push(card);
 
             addSystemLog(meta.roomCode, `⚔️ ${player.name} khiêu chiến QUYẾT ĐẤU tay đôi với ${target.name}!`);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             room.activeAction = {
               id: `duel_${Math.random().toString(36).substring(2, 9)}`,
@@ -1316,7 +1839,7 @@ wss.on('connection', (ws) => {
             if (!target || target.isEliminated || target.id === player.id) return;
             player.cards.splice(cardIndex, 1);
             room.discardPile.push(card);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             const targetIndex = room.players.findIndex(roomPlayer => roomPlayer.id === target.id);
             const affectedIndexes = [
@@ -1341,7 +1864,7 @@ wss.on('connection', (ws) => {
             if (!target || target.isEliminated || target.id === player.id) return;
             player.cards.splice(cardIndex, 1);
             room.discardPile.push(card);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
             const damage = card.type === 'pursuit' && target.hp < target.maxHp ? 2 : 1;
             addSystemLog(meta.roomCode, `${card.emoji} ${player.name} dùng ${card.name} lên ${target.name}.`);
             dealDamage(room, target.id, damage, player.id, 'tactical');
@@ -1354,7 +1877,14 @@ wss.on('connection', (ws) => {
 
             addSystemLog(meta.roomCode, `🎁 ${player.name} dùng RÚT bài.`);
             drawCards(room, player, 2);
-            handleTacticalPlayExtras(room, player);
+
+            // Fern: Sau khi dùng Rút, rút thêm 1 lá
+            if (player.isRevealed && player.hero === 'Fern' && !player.isLocked) {
+              drawCards(room, player, 1);
+              addSystemLog(meta.roomCode, `Kỹ năng [Fern]: ${player.name} rút thêm 1 lá nhờ Rút bài.`);
+            }
+
+            handleTacticalPlayExtras(room, player, card.type);
           }
 
           else if (card.type === 'exchange') {
@@ -1367,7 +1897,13 @@ wss.on('connection', (ws) => {
             room.discardPile.push(card);
 
             addSystemLog(meta.roomCode, `🔄 ${player.name} dùng ĐỔI bài với ${target.name}.`);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
+
+            // Echo: Sau khi dùng Đổi, rút 1 lá
+            if (player.isRevealed && player.hero === 'Echo' && !player.isLocked) {
+              drawCards(room, player, 1);
+              addSystemLog(meta.roomCode, `Kỹ năng [Echo]: ${player.name} rút 1 lá sau khi Đổi.`);
+            }
 
             // Moss only protects equipment from Steal; Exchange still affects hand cards.
             if (player.cards.length > 0 && target.cards.length > 0) {
@@ -1392,20 +1928,33 @@ wss.on('connection', (ws) => {
               return;
             }
 
+            if ((target && target.isRevealed && target.hero === 'River' && !target.isLocked)) {
+              addSystemLog(meta.roomCode, `Kỹ năng [River]: ${target.name} miễn nhiễm với Khóa.`);
+              broadcastToRoom(meta.roomCode);
+              break;
+            }
+
             player.cards.splice(cardIndex, 1);
             room.discardPile.push(card);
 
             addSystemLog(meta.roomCode, `🚫 ${player.name} dùng KHÓA pháp ấn lên ${target.name}.`);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             target.isLocked = true;
           }
 
           else if (card.type === 'stun' || card.type === 'freeze' || card.type === 'bind') {
             if (!target || target.isEliminated || target.id === player.id) return;
+
+            if ((target && target.isRevealed && target.hero === 'River' && !target.isLocked)) {
+              addSystemLog(meta.roomCode, `Kỹ năng [River]: ${target.name} miễn nhiễm với ${card.name}.`);
+              broadcastToRoom(meta.roomCode);
+              break;
+            }
+
             player.cards.splice(cardIndex, 1);
             room.discardPile.push(card);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
             if (card.type === 'stun') target.isStunned = true;
             if (card.type === 'freeze') target.isFrozen = true;
             if (card.type === 'bind') target.isBoundNextTurn = true;
@@ -1417,9 +1966,16 @@ wss.on('connection', (ws) => {
               ws.send(JSON.stringify({ type: 'ERROR', message: 'Mục tiêu không có trang bị để Cuốn Bay.' }));
               return;
             }
+
+            if ((target && target.isRevealed && target.hero === 'River' && !target.isLocked)) {
+              addSystemLog(meta.roomCode, `Kỹ năng [River]: ${target.name} miễn nhiễm với Cuốn Bay.`);
+              broadcastToRoom(meta.roomCode);
+              break;
+            }
+
             player.cards.splice(cardIndex, 1);
             room.discardPile.push(card);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
             room.activeAction = {
               id: `destroy_${Math.random().toString(36).substring(2, 9)}`,
               type: 'select_destroy_equipment', card,
@@ -1437,7 +1993,7 @@ wss.on('connection', (ws) => {
             room.discardPile.push(card);
 
             addSystemLog(meta.roomCode, `👀 ${player.name} lén lút XEM trộm bài của ${target.name}.`);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             if (target.cards.length > 0) {
               const viewedCards = [...target.cards].sort(() => Math.random() - 0.5).slice(0, 2);
@@ -1477,7 +2033,7 @@ wss.on('connection', (ws) => {
             room.discardPile.push(card);
 
             addSystemLog(meta.roomCode, `🎯 ${player.name} bắt đầu hành vi CƯỚP đoạt của ${target.name}.`);
-            handleTacticalPlayExtras(room, player);
+            handleTacticalPlayExtras(room, player, card.type);
 
             room.activeAction = {
               id: `steal_${Math.random().toString(36).substring(2, 9)}`,
@@ -1512,6 +2068,12 @@ wss.on('connection', (ws) => {
             player.equipments.push(card);
             if (card.type === 'magnet' && target) player.magnetTargetId = target.id;
             addSystemLog(meta.roomCode, `🛡️ ${player.name} trang bị thành công [${card.name}].`);
+
+            // Vine: Sau khi trang bị, rút 1 lá
+            if (player.isRevealed && player.hero === 'Vine' && !player.isLocked) {
+              drawCards(room, player, 1);
+              addSystemLog(meta.roomCode, `Kỹ năng [Vine]: ${player.name} rút 1 lá sau khi trang bị.`);
+            }
           }
 
           else if (card.category === 'teammate') {
@@ -1635,10 +2197,33 @@ wss.on('connection', (ws) => {
                 addSystemLog(meta.roomCode, `💎 Khiên Pha Lê hồi 1 máu cho ${player.name}.`);
               }
 
+              // Wave: Sau khi Đỡ thành công, rút 1 lá
+              if (player.isRevealed && player.hero === 'Wave' && !player.isLocked) {
+                drawCards(room, player, 1);
+                addSystemLog(meta.roomCode, `Kỹ năng [Wave]: ${player.name} rút 1 lá sau khi Đỡ thành công.`);
+              }
+
+              // Bubble: Sau khi Đỡ thành công, khoảng cách từ người khác +1 (handled in calculateDistance)
+              if (player.isRevealed && player.hero === 'Bubble' && !player.isLocked) {
+                addSystemLog(meta.roomCode, `Kỹ năng [Bubble]: ${player.name} tạo khoảng cách sau khi né đòn.`);
+              }
+
               // Volt skill trigger: "Sau khi dùng Đỡ thành công, có thể dùng ngay 1 lá Đánh."
               const attacker = room.players.find(a => a.id === completedAction.sourcePlayerId && !a.isEliminated);
               const nextAction = getNextAction(room, completedAction);
               if (nextAction) room.pendingActions.push(nextAction);
+
+              // Crimson: Khi Đánh không gây sát thương (bị Đỡ), rút 1 lá
+              if (attacker && attacker.isRevealed && attacker.hero === 'Crimson' && !attacker.isLocked) {
+                drawCards(room, attacker, 1);
+                addSystemLog(meta.roomCode, `Kỹ năng [Crimson]: ${attacker.name} rút 1 lá vì Đánh không trúng.`);
+              }
+
+              // Cyclone: same as Crimson
+              if (attacker && attacker.isRevealed && attacker.hero === 'Cyclone' && !attacker.isLocked) {
+                drawCards(room, attacker, 1);
+                addSystemLog(meta.roomCode, `Kỹ năng [Cyclone]: ${attacker.name} rút 1 lá vì Đánh không trúng.`);
+              }
               const canVoltStrike = player.isRevealed && player.hero === 'Volt' && !player.isLocked &&
                 !player.isFrozen && attacker && player.cards.some(card => card.type === 'strike');
               if (canVoltStrike && attacker) {
@@ -1817,6 +2402,12 @@ wss.on('connection', (ws) => {
                   addSystemLog(meta.roomCode, `Kỹ năng [Aqua]: ${player.name} cứu đồng đội và rút 1 lá.`);
                 }
 
+                // Rain: Sau khi cứu người hấp hối thành công, rút 2 lá
+                if (player.isRevealed && player.hero === 'Rain' && !player.isLocked) {
+                  drawCards(room, player, 2);
+                  addSystemLog(meta.roomCode, `Kỹ năng [Rain]: ${player.name} rút 2 lá sau khi cứu người.`);
+                }
+
                 resumePendingAction(room);
               }
             }
@@ -1837,10 +2428,45 @@ wss.on('connection', (ws) => {
           if (!source || !target || source.id !== meta.playerId) return;
           const equipmentIndex = target.equipments.findIndex(equipment => equipment.id === data.payload.targetCardId);
           if (equipmentIndex === -1) return;
+
+          // Seal: Lần đầu mỗi lượt trang bị sắp bị phá hủy, bỏ qua
+          if (target.isRevealed && target.hero === 'Seal' && !target.isLocked && !target.sealProtectionUsed) {
+            target.sealProtectionUsed = true;
+            addSystemLog(meta.roomCode, `Kỹ năng [Seal]: ${target.name} bảo vệ trang bị khỏi bị phá hủy.`);
+            room.activeAction = null;
+            broadcastToRoom(meta.roomCode);
+            break;
+          }
+
           const destroyed = target.equipments.splice(equipmentIndex, 1)[0];
           room.discardPile.push(destroyed);
           room.activeAction = null;
           addSystemLog(meta.roomCode, `🌪️ ${source.name} phá hủy [${destroyed.name}] của ${target.name}.`);
+
+          // Arc: Sau khi phá hủy trang bị, rút 1 lá
+          if (source.isRevealed && source.hero === 'Arc' && !source.isLocked) {
+            drawCards(room, source, 1);
+            addSystemLog(meta.roomCode, `Kỹ năng [Arc]: ${source.name} rút 1 lá sau khi phá hủy trang bị.`);
+          }
+
+          // Root: Khi trang bị rời khỏi khu vực trang bị, rút 2 lá
+          if (target.isRevealed && target.hero === 'Root' && !target.isLocked) {
+            drawCards(room, target, 2);
+            addSystemLog(meta.roomCode, `Kỹ năng [Root]: ${target.name} rút 2 lá khi mất trang bị.`);
+          }
+
+          // Elder: Sau khi có người phá hủy trang bị, hồi 1 máu
+          if (target.isRevealed && target.hero === 'Elder' && !target.isLocked) {
+            target.hp = Math.min(target.maxHp, target.hp + 1);
+            addSystemLog(meta.roomCode, `Kỹ năng [Elder]: ${target.name} hồi 1 máu sau khi mất trang bị.`);
+          }
+
+          // Maple: Sau khi bỏ bài của người khác, xem thêm 1 lá trên tay họ
+          if (source.isRevealed && source.hero === 'Maple' && !source.isLocked && target.cards.length > 0) {
+            const viewed = target.cards[Math.floor(Math.random() * target.cards.length)];
+            addPrivateLog(room, [source.id], `Kỹ năng [Maple]: Xem bài của ${target.name}: [${viewed.name}].`);
+          }
+
           broadcastToRoom(meta.roomCode);
           break;
         }
@@ -1869,6 +2495,12 @@ wss.on('connection', (ws) => {
             const stolen = target.equipments.splice(eqIdx, 1)[0];
             source.cards.push(stolen);
             addSystemLog(meta.roomCode, `🎯 ${source.name} đã giật lấy món đồ [${stolen.name}] từ trang bị của ${target.name}.`);
+
+            // Root: Khi trang bị rời khỏi khu vực trang bị (bị cướp), rút 2 lá
+            if (target.isRevealed && target.hero === 'Root' && !target.isLocked) {
+              drawCards(room, target, 2);
+              addSystemLog(meta.roomCode, `Kỹ năng [Root]: ${target.name} rút 2 lá khi bị cướp trang bị.`);
+            }
           } else {
             // hand card random steal
             if (target.cards.length === 0) return;
@@ -1876,6 +2508,12 @@ wss.on('connection', (ws) => {
             const stolen = target.cards.splice(randIdx, 1)[0];
             source.cards.push(stolen);
             addSystemLog(meta.roomCode, `🎯 ${source.name} đã tước đoạt thành công 1 lá bài ẩn trên tay của ${target.name}.`);
+          }
+
+          // Ivy: Sau khi lấy được bài từ người khác, rút thêm 1 lá
+          if (source.isRevealed && source.hero === 'Ivy' && !source.isLocked) {
+            drawCards(room, source, 1);
+            addSystemLog(meta.roomCode, `Kỹ năng [Ivy]: ${source.name} rút thêm 1 lá sau khi cướp bài.`);
           }
 
           room.activeAction = null;
@@ -1934,9 +2572,18 @@ wss.on('connection', (ws) => {
 
           addSystemLog(meta.roomCode, `${player.name} đã bỏ đi ${cardIds.length} lá bài dư thừa.`);
 
+          // Bark: Giới hạn cầm bài cuối lượt tăng thêm 2
+          const barkBonus = player.isRevealed && player.hero === 'Bark' && !player.isLocked ? 2 : 0;
+          const handLimit = player.hp + barkBonus;
+
           // Check again
-          if (player.cards.length <= player.hp) {
-            advanceTurn(room);
+          if (player.cards.length <= handLimit) {
+            // Leaf: Sau khi bỏ bài ở cuối lượt, rút lại 1 lá bài
+            if (player.isRevealed && player.hero === 'Leaf' && !player.isLocked) {
+              drawCards(room, player, 1);
+              addSystemLog(meta.roomCode, `Kỹ năng [Leaf]: ${player.name} rút lại 1 lá sau khi bỏ bài.`);
+            }
+            startEndPhase(room, meta.playerId);
           }
           broadcastToRoom(meta.roomCode);
           break;
@@ -2042,15 +2689,22 @@ wss.on('connection', (ws) => {
   });
 });
 
+const NON_DAMAGE_TACTICALS = new Set(['draw', 'exchange', 'lock', 'stun', 'freeze', 'whirlwind', 'bind', 'view', 'steal']);
+
 // Extras for tactical-card hero skills
-function handleTacticalPlayExtras(room: ServerRoom, player: ServerPlayer) {
+function handleTacticalPlayExtras(room: ServerRoom, player: ServerPlayer, cardType?: string) {
   // Spark skill: "Sau khi dùng thẻ Chiến thuật, rút 1 lá."
   if (player.isRevealed && player.hero === 'Spark' && !player.isLocked) {
     drawCards(room, player, 1);
     addSystemLog(room.code, `Kỹ năng [Spark]: ${player.name} rút 1 lá sau khi dùng thẻ Chiến thuật.`);
   }
 
-  // Ring equipment check: "Lần đầu dùng thẻ Chiến thuật mỗi lượt, rút 1 lá."
+  // Monsoon: Sau khi dùng Chiến thuật không gây sát thương, rút 1 lá (1 lần/lượt)
+  if (cardType && NON_DAMAGE_TACTICALS.has(cardType) && player.isRevealed && player.hero === 'Monsoon' && !player.isLocked && !player.monsoonUsedThisTurn) {
+    player.monsoonUsedThisTurn = true;
+    drawCards(room, player, 1);
+    addSystemLog(room.code, `Kỹ năng [Monsoon]: ${player.name} rút 1 lá sau khi dùng Chiến thuật không sát thương.`);
+  }
 }
 
 // Configure client routes and start

@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Copy, Check, Crown, MessageSquare, LogOut, Play, ShieldAlert, Terminal, Send } from 'lucide-react';
 import { Room, ChatMessage } from '../types';
+import { HERO_MAP } from '../heroes';
 
 interface LobbyViewProps {
   room: Room;
