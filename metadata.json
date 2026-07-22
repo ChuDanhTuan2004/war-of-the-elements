@@ -1,5 +1,5 @@
 {
-  "name": "Multiplayer Game Base",
+  "name": "WOTE",
   "description": "Dự án cơ sở cho web game multiplayer hỗ trợ tạo và tham gia phòng chơi tối đa 12 người với đồng bộ hóa thời gian thực bằng WebSocket.",
   "requestFramePermissions": [],
   "majorCapabilities": [

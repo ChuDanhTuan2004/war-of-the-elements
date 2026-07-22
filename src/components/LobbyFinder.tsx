@@ -1,21 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Compass, 
-  Search, 
-  RefreshCw, 
-  User, 
-  Gamepad2, 
-  ShieldAlert, 
-  ArrowLeft, 
-  Globe, 
-  Flame, 
-  Droplet, 
-  Zap, 
-  Wifi, 
-  Crown,
-  Play
-} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { motion } from 'motion/react';
+import { ArrowLeft, Compass, Crown, Gamepad2, Plus, RefreshCw, Search, ShieldAlert, User, Wifi } from 'lucide-react';
 
 interface LobbyFinderProps {
   onBack: () => void;
@@ -27,433 +12,127 @@ interface LobbyFinderProps {
   language: 'vi' | 'en';
 }
 
+type PlayerProfile = { name: string; avatar: string; color: string };
+type PendingRoom = { type: 'join'; roomCode: string } | { type: 'create' };
+
+const PROFILE_KEY = 'wote-player-profile';
 const AVATARS = ['🔥', '💧', '⛰️', '⚡', '💨', '🐉', '👾', '🚀', '🔮', '🤖', '💀', '🦊', '🐱', '🦁', '🐼', '🐯'];
-const COLORS = [
-  '#ef4444', // Fire Red
-  '#3b82f6', // Water Blue
-  '#10b981', // Earth Emerald
-  '#8b5cf6', // Lightning Violet
-  '#f59e0b', // Amber
-  '#ec4899', // Rose Pink
-  '#06b6d4', // Cyan
-  '#f97316', // Orange
-];
+const COLORS = ['#ef4444', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ec4899', '#06b6d4', '#f97316'];
 
-const RANDOM_NAMES = [
-  'HỏaThần', 'ThủyQuái', 'LôiMa', 'PhongLãngKhách', 'ThổThần',
-  'ElementalKing', 'StormBringer', 'FlameLord', 'AquaHunter', 'GigaZapper',
-  'ChiếnBinhRồng', 'SátThủBóngĐêm', 'PhápSưTốiThượng', 'LãngKháchCôĐộc', 'ChiếnThầnGaming'
-];
+function loadProfile(): PlayerProfile {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) || 'null');
+    if (saved && typeof saved.name === 'string' && AVATARS.includes(saved.avatar) && COLORS.includes(saved.color)) return saved;
+  } catch { /* Invalid data is replaced when the profile is saved. */ }
+  return { name: '', avatar: AVATARS[0], color: COLORS[0] };
+}
 
-export default function LobbyFinder({
-  onBack,
-  onJoin,
-  onCreate,
-  liveRooms,
-  onRefreshRooms,
-  socketError,
-  language
-}: LobbyFinderProps) {
-  const [name, setName] = useState('');
-  const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
-  const [selectedColor, setSelectedColor] = useState(COLORS[0]);
+export default function LobbyFinder({ onBack, onJoin, onCreate, liveRooms, onRefreshRooms, socketError, language }: LobbyFinderProps) {
+  const [pendingRoom, setPendingRoom] = useState<PendingRoom | null>(null);
+  const [profile, setProfile] = useState<PlayerProfile>(loadProfile);
   const [roomCode, setRoomCode] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [localError, setLocalError] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const content = {
-    en: {
-      back: "Back to Menu",
-      heroConfig: "Configure Your Elemental Hero",
-      nicknameLabel: "Hero Nickname",
-      randomName: "Randomize 🎲",
-      avatarLabel: "Select Element Avatar",
-      colorLabel: "Energy Aura Color",
-      publicRoomsTitle: "Public Element Battle Rooms",
-      searchPlaceholder: "Search by room name or host...",
-      refresh: "Refresh list",
-      noRooms: "No public rooms available. Be the first to create one!",
-      joinByCode: "Join with Room Code",
-      codePlaceholder: "Enter 6-digit room code",
-      joinButton: "Join Battle",
-      createButton: "Create Battle Room",
-      playersCount: "Players",
-      statusWaiting: "Waiting in Lobby",
-      statusPlaying: "Active Match",
-      statusFull: "Lobby Full",
-      invalidCode: "Please enter a valid 6-character room code.",
-      needIdentity: "Configure your Hero Profile first!",
-    },
-    vi: {
-      back: "Quay về Trang chủ",
-      heroConfig: "Cấu hình Anh hùng Nguyên tố",
-      nicknameLabel: "Tên anh hùng",
-      randomName: "Ngẫu nhiên 🎲",
-      avatarLabel: "Chọn Linh Vật Nguyên tố",
-      colorLabel: "Màu Luân Xa Đại diện",
-      publicRoomsTitle: "Phòng chơi Công khai hiện có",
-      searchPlaceholder: "Tìm kiếm phòng, chủ phòng...",
-      refresh: "Làm mới danh sách",
-      noRooms: "Không có phòng chơi nào trực tuyến. Hãy tự tạo phòng đầu tiên!",
-      joinByCode: "Gia nhập bằng Mã Phòng",
-      codePlaceholder: "Nhập mã 6 ký tự",
-      joinButton: "Vào chiến trường",
-      createButton: "Tạo phòng đấu mới",
-      playersCount: "Người chơi",
-      statusWaiting: "Đang chờ khách",
-      statusPlaying: "Trận đấu đang diễn ra",
-      statusFull: "Phòng đã đầy",
-      invalidCode: "Vui lòng nhập mã phòng 6 ký tự.",
-      needIdentity: "Vui lòng cấu hình Hồ sơ Anh hùng của bạn trước!",
-    }
-  }[language];
-
-  const randomizeName = () => {
-    const randomIdx = Math.floor(Math.random() * RANDOM_NAMES.length);
-    const suffix = Math.floor(Math.random() * 900 + 100);
-    setName(`${RANDOM_NAMES[randomIdx]}#${suffix}`);
-  };
-
-  const getFinalName = () => {
-    return name.trim() || `Hero_${Math.floor(Math.random() * 9000 + 1000)}`;
-  };
-
-  const handleJoinByCode = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!roomCode.trim() || roomCode.trim().length !== 6) {
-      setLocalError(content.invalidCode);
-      return;
-    }
-    setLocalError('');
-    onJoin(getFinalName(), selectedAvatar, selectedColor, roomCode.toUpperCase().trim());
-  };
-
-  const handleCreateRoom = () => {
-    setLocalError('');
-    onCreate(getFinalName(), selectedAvatar, selectedColor);
-  };
-
-  const triggerRefresh = () => {
-    setIsRefreshing(true);
-    onRefreshRooms();
-    setTimeout(() => {
-      setIsRefreshing(false);
-    }, 800);
-  };
-
-  const activeRoomsCombined = liveRooms.map(r => ({
-    code: r.code,
-    hostName: r.hostName,
-    playerCount: r.playerCount,
-    maxCount: 12,
-    status: r.status,
-    ping: '15ms',
-    element: r.code.charCodeAt(0) % 2 === 0 ? 'water' : 'fire'
-  }));
-
-  // Search filter
-  const filteredRooms = activeRoomsCombined.filter(room => 
+  const vi = language === 'vi';
+  const rooms = useMemo(() => liveRooms.filter(room =>
     room.code.toLowerCase().includes(searchTerm.toLowerCase()) ||
     room.hostName.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  ), [liveRooms, searchTerm]);
+
+  useEffect(() => { setLocalError(''); }, [pendingRoom]);
+
+  const selectRoom = (room: typeof liveRooms[number]) => {
+    if (room.status !== 'lobby') return setLocalError(vi ? 'Trận đấu đã bắt đầu.' : 'The match has already started.');
+    if (room.playerCount >= 12) return setLocalError(vi ? 'Phòng đã đầy.' : 'The room is full.');
+    setPendingRoom({ type: 'join', roomCode: room.code });
+  };
+
+  const chooseCode = (event: React.FormEvent) => {
+    event.preventDefault();
+    const code = roomCode.trim().toUpperCase();
+    if (code.length !== 6) return setLocalError(vi ? 'Mã phòng phải gồm 6 ký tự.' : 'Room code must contain 6 characters.');
+    setPendingRoom({ type: 'join', roomCode: code });
+  };
+
+  const saveAndContinue = (event: React.FormEvent) => {
+    event.preventDefault();
+    const cleanProfile = { ...profile, name: profile.name.trim() };
+    if (!cleanProfile.name) return setLocalError(vi ? 'Hãy nhập tên người chơi.' : 'Enter a player name.');
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(cleanProfile));
+    if (pendingRoom?.type === 'create') onCreate(cleanProfile.name, cleanProfile.avatar, cleanProfile.color);
+    if (pendingRoom?.type === 'join') onJoin(cleanProfile.name, cleanProfile.avatar, cleanProfile.color, pendingRoom.roomCode);
+  };
+
+  const refresh = () => {
+    setIsRefreshing(true);
+    onRefreshRooms();
+    window.setTimeout(() => setIsRefreshing(false), 600);
+  };
 
   return (
-    <div className="w-full space-y-6">
-      
-      {/* Top action header */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 py-2 px-4 bg-slate-900/60 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl border border-slate-800 transition-colors cursor-pointer text-xs font-bold"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          {content.back}
+    <div className="w-full max-w-5xl mx-auto space-y-6">
+      <div className="flex items-center justify-between gap-4">
+        <button onClick={pendingRoom ? () => setPendingRoom(null) : onBack} className="flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-800 bg-slate-900 text-sm font-bold hover:bg-slate-800">
+          <ArrowLeft className="w-4 h-4" /> {pendingRoom ? (vi ? 'Chọn lại phòng' : 'Choose another room') : (vi ? 'Trang chủ' : 'Home')}
         </button>
-        
-        <div className="flex items-center gap-2 text-xs font-mono text-indigo-400 font-bold bg-indigo-500/10 border border-indigo-500/20 px-3 py-1 rounded-full">
-          <Globe className="w-3.5 h-3.5 animate-spin" />
-          <span>REALTIME MULTIPLAYER SERVICE</span>
-        </div>
+        <div className="text-xs font-mono font-bold text-emerald-400 flex items-center gap-2"><Wifi className="w-4 h-4" /> REALTIME</div>
       </div>
 
-      {/* Grid container: Left side holds config + join by code; Right side holds public rooms list */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* LEFT COLUMN: HERO CHARACTER CONFIGURATOR & JOIN CARD (5 COLS) */}
-        <div className="lg:col-span-5 space-y-6">
-          
-          {/* Character Config Card */}
-          <div className="bg-slate-900/60 backdrop-blur-md rounded-2xl border border-slate-800 p-6 shadow-2xl relative overflow-hidden">
-            <div 
-              className="absolute -top-16 -right-16 w-32 h-32 rounded-full blur-3xl opacity-20 transition-all duration-500"
-              style={{ backgroundColor: selectedColor }}
-            />
-            
-            <div className="flex items-center gap-2 mb-4">
-              <Gamepad2 className="w-5 h-5 text-indigo-400" />
-              <h3 className="font-extrabold text-sm uppercase tracking-wider text-slate-200">
-                {content.heroConfig}
-              </h3>
-            </div>
-
-            <div className="space-y-4">
-              {/* Nickname input */}
-              <div>
-                <div className="flex justify-between items-center mb-1.5">
-                  <label className="text-xs font-semibold text-slate-400 uppercase">
-                    {content.nicknameLabel}
-                  </label>
-                  <button
-                    type="button"
-                    onClick={randomizeName}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
-                  >
-                    {content.randomName}
-                  </button>
-                </div>
-                <div className="relative">
-                  <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                  <input
-                    type="text"
-                    placeholder="Nhập tên anh hùng..."
-                    value={name}
-                    onChange={(e) => {
-                      setName(e.target.value);
-                      setLocalError('');
-                    }}
-                    maxLength={16}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 pl-11 pr-4 focus:ring-1 focus:ring-indigo-500 text-white outline-none transition-all placeholder:text-slate-600 font-bold"
-                  />
-                </div>
-              </div>
-
-              {/* Avatar select */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase">
-                  {content.avatarLabel} ({selectedAvatar})
-                </label>
-                <div className="grid grid-cols-8 gap-2 bg-slate-950 p-3 rounded-xl border border-slate-800">
-                  {AVATARS.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      onClick={() => setSelectedAvatar(emoji)}
-                      className={`text-xl p-1 rounded-lg hover:bg-slate-800 transition-all cursor-pointer ${
-                        selectedAvatar === emoji ? 'bg-indigo-600/30 border border-indigo-500 scale-110' : 'border border-transparent'
-                      }`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Aura color */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase">
-                  {content.colorLabel}
-                </label>
-                <div className="flex justify-between bg-slate-950 p-3 rounded-xl border border-slate-800">
-                  {COLORS.map((hex) => (
-                    <button
-                      key={hex}
-                      type="button"
-                      onClick={() => setSelectedColor(hex)}
-                      className={`w-5 h-5 rounded-full cursor-pointer transition-transform relative ${
-                        selectedColor === hex ? 'scale-125 ring-2 ring-white' : 'hover:scale-115'
-                      }`}
-                      style={{ backgroundColor: hex }}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
+      {!pendingRoom ? (
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+          <div>
+            <p className="text-indigo-400 text-xs font-black uppercase tracking-[.25em] mb-2">{vi ? 'Bước 1 / 2' : 'Step 1 / 2'}</p>
+            <h2 className="text-3xl font-black">{vi ? 'Chọn cách tham gia' : 'Choose how to play'}</h2>
+            <p className="text-slate-400 mt-2">{vi ? 'Chọn một phòng công khai, nhập mã mời hoặc mở phòng mới.' : 'Pick a public room, enter an invite code, or create a new room.'}</p>
           </div>
 
-          {/* Join by code Card */}
-          <div className="bg-slate-900/60 backdrop-blur-md rounded-2xl border border-slate-800 p-6 shadow-2xl space-y-4">
-            <h3 className="font-extrabold text-sm uppercase tracking-wider text-slate-200">
-              {content.joinByCode}
-            </h3>
+          {(localError || socketError) && <div className="p-3 rounded-xl border border-red-800 bg-red-950/40 text-red-300 text-sm flex gap-2"><ShieldAlert className="w-4 h-4 shrink-0" />{localError || socketError}</div>}
 
-            <form onSubmit={handleJoinByCode} className="space-y-3">
-              <div>
-                <input
-                  type="text"
-                  placeholder={content.codePlaceholder}
-                  value={roomCode}
-                  onChange={(e) => {
-                    setRoomCode(e.target.value.toUpperCase().trim());
-                    setLocalError('');
-                  }}
-                  maxLength={6}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-3 px-4 focus:ring-1 focus:ring-indigo-500 text-white font-mono tracking-widest text-center text-lg outline-none transition-all placeholder:text-slate-600 placeholder:tracking-normal placeholder:font-sans placeholder:text-sm"
-                />
-              </div>
-
-              {localError && (
-                <div className="bg-red-950/40 border border-red-800 text-red-300 rounded-xl p-3 text-xs flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 shrink-0" />
-                  <span>{localError}</span>
-                </div>
-              )}
-
-              {socketError && (
-                <div className="bg-red-950/40 border border-red-800 text-red-300 rounded-xl p-3 text-xs flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 shrink-0" />
-                  <span>{socketError}</span>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-xl transition-transform active:scale-[0.98] shadow-lg shadow-indigo-900/20 cursor-pointer"
-              >
-                {content.joinButton}
-              </button>
+          <div className="grid md:grid-cols-2 gap-4">
+            <form onSubmit={chooseCode} className="p-5 rounded-2xl border border-slate-800 bg-slate-900/70 space-y-3">
+              <h3 className="font-black">{vi ? 'Nhập mã phòng' : 'Enter room code'}</h3>
+              <input value={roomCode} onChange={e => { setRoomCode(e.target.value.toUpperCase().replace(/\s/g, '')); setLocalError(''); }} maxLength={6} placeholder="ABC123" className="w-full p-3 rounded-xl bg-slate-950 border border-slate-700 text-center font-mono text-xl tracking-[.3em] outline-none focus:border-indigo-500" />
+              <button className="w-full p-3 rounded-xl bg-blue-600 hover:bg-blue-500 font-bold">{vi ? 'Tiếp tục' : 'Continue'}</button>
             </form>
-
-            <div className="relative flex items-center justify-center my-3">
-              <hr className="w-full border-slate-800" />
-              <span className="absolute px-3 bg-slate-900 text-[10px] text-slate-500 font-bold uppercase">OR</span>
-            </div>
-
-            <button
-              onClick={handleCreateRoom}
-              className="w-full py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold rounded-xl border border-indigo-500/20 transition-transform active:scale-[0.98] shadow-lg cursor-pointer flex items-center justify-center gap-2"
-            >
-              <Play className="w-4 h-4 fill-current text-amber-400" />
-              {content.createButton}
+            <button onClick={() => setPendingRoom({ type: 'create' })} className="p-5 rounded-2xl border border-indigo-500/30 bg-gradient-to-br from-violet-950/80 to-slate-900 text-left hover:border-indigo-400 transition-colors">
+              <Plus className="w-8 h-8 text-indigo-400 mb-4" />
+              <h3 className="font-black text-lg">{vi ? 'Mở phòng mới' : 'Create a new room'}</h3>
+              <p className="text-sm text-slate-400 mt-1">{vi ? 'Bạn sẽ là chủ phòng và có thể mời bạn bè bằng mã.' : 'Become the host and invite friends with a code.'}</p>
             </button>
           </div>
 
-        </div>
-
-        {/* RIGHT COLUMN: PUBLIC ROOMS DIRECTORY (7 COLS) */}
-        <div className="lg:col-span-7 flex flex-col space-y-4">
-          
-          <div className="bg-slate-900/60 backdrop-blur-md rounded-2xl border border-slate-800 p-6 shadow-2xl flex-1 flex flex-col justify-between">
-            <div className="space-y-4 flex-1">
-              
-              {/* Section Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <h3 className="font-extrabold text-sm uppercase tracking-wider text-slate-200">
-                  {content.publicRoomsTitle}
-                </h3>
-
-                <button
-                  onClick={triggerRefresh}
-                  className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 font-bold transition-all cursor-pointer self-start sm:self-auto"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-white' : ''}`} />
-                  {content.refresh}
-                </button>
+          <div className="p-5 rounded-2xl border border-slate-800 bg-slate-900/60 space-y-4">
+            <div className="flex flex-col sm:flex-row gap-3 sm:items-center justify-between">
+              <h3 className="font-black flex items-center gap-2"><Compass className="w-5 h-5 text-indigo-400" />{vi ? 'Phòng công khai' : 'Public rooms'}</h3>
+              <div className="flex gap-2">
+                <div className="relative"><Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" /><input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder={vi ? 'Tìm phòng...' : 'Search rooms...'} className="bg-slate-950 border border-slate-800 rounded-lg py-2 pl-9 pr-3 text-sm outline-none" /></div>
+                <button onClick={refresh} className="p-2 border border-slate-800 rounded-lg"><RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} /></button>
               </div>
-
-              {/* Search input field */}
-              <div className="relative">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder={content.searchPlaceholder}
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 pl-11 pr-4 focus:ring-1 focus:ring-indigo-500 text-sm text-white outline-none transition-all placeholder:text-slate-600"
-                />
-              </div>
-
-              {/* Rooms Grid / List */}
-              <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
-                {filteredRooms.length === 0 ? (
-                  <div className="py-12 text-center text-slate-500 space-y-3">
-                    <Compass className="w-10 h-10 mx-auto text-slate-700 animate-pulse" />
-                    <p className="text-sm">{content.noRooms}</p>
-                  </div>
-                ) : (
-                  filteredRooms.map((room) => {
-                    // Match visual styles
-                    const isFull = room.playerCount >= room.maxCount;
-                    const isPlaying = room.status === 'playing';
-                    
-                    return (
-                      <motion.div
-                        key={room.code}
-                        layout
-                        className="bg-slate-950 border border-slate-850 hover:border-indigo-500/30 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono font-black tracking-wider text-indigo-400 text-sm">
-                              {room.code}
-                            </span>
-                            
-                            {/* Elemental symbol decoration */}
-                            {room.element === 'fire' ? (
-                              <Flame className="w-3.5 h-3.5 text-red-500" />
-                            ) : (
-                              <Droplet className="w-3.5 h-3.5 text-blue-400" />
-                            )}
-
-                            {/* Status label badge */}
-                            <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                              isPlaying
-                                ? 'bg-purple-950/60 text-purple-400 border border-purple-800/20'
-                                : isFull
-                                  ? 'bg-red-950/60 text-red-400 border border-red-800/20'
-                                  : 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/20'
-                            }`}>
-                              {isPlaying ? content.statusPlaying : isFull ? content.statusFull : content.statusWaiting}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-2 text-xs text-slate-400 font-medium">
-                            <Crown className="w-3 h-3 text-amber-500" />
-                            <span>{room.hostName}</span>
-                            <span className="text-slate-600">|</span>
-                            <span>{room.playerCount}/{room.maxCount} {content.playersCount}</span>
-                          </div>
-                        </div>
-
-                        {/* Action section inside row */}
-                        <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-end border-t border-slate-900 pt-3 sm:pt-0 sm:border-0">
-                          <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-500">
-                            <Wifi className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>{room.ping}</span>
-                          </div>
-
-                          <button
-                            onClick={() => {
-                              if (isPlaying) {
-                                setLocalError('Trận đấu đang diễn ra, không thể tham gia lúc này.');
-                              } else if (isFull) {
-                                setLocalError('Phòng đấu đã đầy thành viên.');
-                              } else {
-                                onJoin(getFinalName(), selectedAvatar, selectedColor, room.code);
-                              }
-                            }}
-                            className={`py-2 px-4 rounded-lg font-bold text-xs transition-colors ${
-                              isPlaying || isFull
-                                ? 'bg-slate-900 text-slate-600 cursor-not-allowed border border-slate-800/60'
-                                : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'
-                            }`}
-                          >
-                            JOIN
-                          </button>
-                        </div>
-                      </motion.div>
-                    );
-                  })
-                )}
-              </div>
-
+            </div>
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {rooms.length === 0 ? <div className="py-10 text-center text-slate-500">{vi ? 'Chưa có phòng công khai.' : 'No public rooms yet.'}</div> : rooms.map(room => {
+                const available = room.status === 'lobby' && room.playerCount < 12;
+                return <button key={room.code} onClick={() => selectRoom(room)} disabled={!available} className="w-full p-4 rounded-xl border border-slate-800 bg-slate-950 flex items-center justify-between text-left disabled:opacity-45 hover:enabled:border-indigo-500">
+                  <div><div className="font-mono font-black text-indigo-400">{room.code}</div><div className="text-xs text-slate-400 mt-1 flex gap-2 items-center"><Crown className="w-3 h-3 text-amber-400" />{room.hostName}</div></div>
+                  <div className="text-right"><div className="font-bold text-sm">{room.playerCount}/12</div><div className={`text-xs ${available ? 'text-emerald-400' : 'text-slate-500'}`}>{available ? (vi ? 'Ấn để chọn' : 'Select') : (vi ? 'Không thể vào' : 'Unavailable')}</div></div>
+                </button>;
+              })}
             </div>
           </div>
-
-        </div>
-
-      </div>
-
+        </motion.div>
+      ) : (
+        <motion.form onSubmit={saveAndContinue} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="max-w-xl mx-auto p-6 md:p-8 rounded-2xl border border-slate-800 bg-slate-900/70 space-y-6">
+          <div><p className="text-indigo-400 text-xs font-black uppercase tracking-[.25em] mb-2">{vi ? 'Bước 2 / 2' : 'Step 2 / 2'}</p><h2 className="text-2xl font-black">{vi ? 'Cấu hình người chơi' : 'Player profile'}</h2><p className="text-slate-400 text-sm mt-2">{pendingRoom.type === 'create' ? (vi ? 'Bạn đang mở một phòng mới.' : 'You are creating a new room.') : `${vi ? 'Phòng đã chọn' : 'Selected room'}: ${pendingRoom.roomCode}`}</p></div>
+          <div><label className="text-xs font-bold text-slate-400 uppercase">{vi ? 'Tên người chơi' : 'Player name'}</label><div className="relative mt-2"><User className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-500" /><input autoFocus value={profile.name} onChange={e => setProfile({ ...profile, name: e.target.value })} maxLength={16} className="w-full p-3 pl-10 rounded-xl bg-slate-950 border border-slate-700 outline-none focus:border-indigo-500" placeholder={vi ? 'Nhập tên của bạn' : 'Enter your name'} /></div></div>
+          <div><label className="text-xs font-bold text-slate-400 uppercase">Avatar</label><div className="grid grid-cols-8 gap-2 mt-2 p-3 bg-slate-950 rounded-xl">{AVATARS.map(avatar => <button type="button" key={avatar} onClick={() => setProfile({ ...profile, avatar })} className={`text-xl p-1 rounded-lg ${profile.avatar === avatar ? 'bg-indigo-600 ring-2 ring-indigo-300' : 'hover:bg-slate-800'}`}>{avatar}</button>)}</div></div>
+          <div><label className="text-xs font-bold text-slate-400 uppercase">{vi ? 'Màu đại diện' : 'Profile color'}</label><div className="flex gap-4 mt-3">{COLORS.map(color => <button type="button" aria-label={color} key={color} onClick={() => setProfile({ ...profile, color })} style={{ backgroundColor: color }} className={`w-7 h-7 rounded-full ${profile.color === color ? 'ring-2 ring-white ring-offset-2 ring-offset-slate-900 scale-110' : ''}`} />)}</div></div>
+          {(localError || socketError) && <div className="p-3 rounded-xl border border-red-800 bg-red-950/40 text-red-300 text-sm flex gap-2"><ShieldAlert className="w-4 h-4" />{localError || socketError}</div>}
+          <button type="submit" className="w-full p-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 font-black flex items-center justify-center gap-2 hover:from-indigo-500 hover:to-violet-500"><Gamepad2 className="w-5 h-5" />{pendingRoom.type === 'create' ? (vi ? 'Lưu và mở phòng' : 'Save and create room') : (vi ? 'Lưu và vào phòng' : 'Save and join room')}</button>
+          <p className="text-center text-xs text-slate-500">{vi ? 'Hồ sơ sẽ được lưu trên thiết bị này.' : 'Your profile will be saved on this device.'}</p>
+        </motion.form>
+      )}
     </div>
   );
 }

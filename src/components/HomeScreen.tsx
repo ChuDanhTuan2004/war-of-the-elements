@@ -37,8 +37,8 @@ export default function HomeScreen({
   const content = {
     en: {
       slogan: "Master the Elements. Conquer the Battlefield.",
-      friendsTitle: "Play with Friends",
-      friendsDesc: "Join an existing room or create your own battle.",
+      friendsTitle: "Play Now",
+      friendsDesc: "Browse public rooms, enter a code, or create your own battle.",
       settingsTitle: "Game Settings",
       difficulty: "Graphics Quality",
       serverRegion: "Server Region",
@@ -46,8 +46,8 @@ export default function HomeScreen({
     },
     vi: {
       slogan: "Làm chủ Nguyên tố. Chinh phục Chiến trường.",
-      friendsTitle: "Chơi cùng Bạn bè",
-      friendsDesc: "Vào phòng có sẵn hoặc tự tạo trận chiến multiplayer.",
+      friendsTitle: "Chơi ngay",
+      friendsDesc: "Chọn phòng công khai, nhập mã hoặc mở phòng mới.",
       settingsTitle: "Cài đặt Game",
       difficulty: "Chất lượng đồ họa",
       serverRegion: "Khu vực Máy chủ",
