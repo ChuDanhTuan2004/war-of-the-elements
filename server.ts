@@ -9,6 +9,19 @@ import { ALL_HEROES, getHeroesByKingdom, getHeroByName, HeroData, Kingdom } from
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
+const responsiveSockets = new WeakSet<WebSocket>();
+
+const heartbeatTimer = setInterval(() => {
+  wss.clients.forEach(client => {
+    if (!responsiveSockets.has(client)) {
+      client.terminate();
+      return;
+    }
+    responsiveSockets.delete(client);
+    client.ping();
+  });
+}, 15_000);
+wss.on('close', () => clearInterval(heartbeatTimer));
 
 const PORT = Number(process.env.PORT) || 3333;
 
@@ -31,6 +44,7 @@ interface ServerRoom extends Omit<Room, 'players' | 'activeAction'> {
 }
 
 interface ServerPlayer extends Player {
+  isConnected?: boolean;
   blazeFirstDmgActive?: boolean;
   glacierFirstDmgActive?: boolean;
   hasTacticalFirstPlayed?: boolean;
@@ -87,8 +101,44 @@ interface TrackerState {
 
 // Global server state
 const rooms: Record<string, ServerRoom> = {};
-const wsMeta = new Map<WebSocket, { playerId: string; roomCode: string }>();
+interface SocketMeta { playerId: string; roomCode: string; sessionToken: string }
+interface PlayerSession extends SocketMeta { socket: WebSocket; disconnectTimer?: NodeJS.Timeout }
+const wsMeta = new Map<WebSocket, SocketMeta>();
+const playerSessions = new Map<string, PlayerSession>();
 const roomTimers: Record<string, NodeJS.Timeout> = {};
+const RECONNECT_GRACE_MS = 20_000;
+
+function makeId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function sendPublicRooms(target?: WebSocket) {
+  const message = JSON.stringify({ type: 'PUBLIC_ROOMS_LIST', payload: { rooms: Object.values(rooms).map(room => ({
+    code: room.code,
+    hostName: room.players.find(player => player.isHost)?.name || 'Anonymous',
+    playerCount: room.players.length,
+    status: room.status
+  })) } });
+  if (target) {
+    if (target.readyState === WebSocket.OPEN) target.send(message);
+    return;
+  }
+  wss.clients.forEach(client => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
+}
+
+function attachSession(ws: WebSocket, playerId: string, roomCode: string, sessionToken = makeId()) {
+  const previous = playerSessions.get(sessionToken);
+  if (previous?.disconnectTimer) clearTimeout(previous.disconnectTimer);
+  if (previous?.socket !== ws && previous?.socket.readyState === WebSocket.OPEN) {
+    previous.socket.close(4001, 'Session opened elsewhere');
+  }
+  const meta = { playerId, roomCode, sessionToken };
+  wsMeta.set(ws, meta);
+  playerSessions.set(sessionToken, { ...meta, socket: ws });
+  return sessionToken;
+}
 
 // Card templates
 interface CardTemplate {
@@ -1266,12 +1316,38 @@ function dealActionDamage(
 }
 
 // Clean up player leave
-function handlePlayerLeave(ws: WebSocket) {
+function handlePlayerLeave(ws: WebSocket, immediate = false) {
   const meta = wsMeta.get(ws);
   if (!meta) return;
 
-  const { playerId, roomCode } = meta;
+  const { playerId, roomCode, sessionToken } = meta;
   wsMeta.delete(ws);
+
+  const session = playerSessions.get(sessionToken);
+  if (!session || session.socket !== ws) return;
+
+  const room = rooms[roomCode];
+  if (!room) {
+    playerSessions.delete(sessionToken);
+    return;
+  }
+
+  const leavingPlayer = room.players.find(p => p.id === playerId);
+  if (!immediate) {
+    if (leavingPlayer) leavingPlayer.isConnected = false;
+    broadcastToRoom(roomCode);
+    session.disconnectTimer = setTimeout(() => removePlayer(sessionToken), RECONNECT_GRACE_MS);
+    return;
+  }
+  removePlayer(sessionToken);
+}
+
+function removePlayer(sessionToken: string) {
+  const session = playerSessions.get(sessionToken);
+  if (!session) return;
+  const { playerId, roomCode } = session;
+  if (session.disconnectTimer) clearTimeout(session.disconnectTimer);
+  playerSessions.delete(sessionToken);
 
   const room = rooms[roomCode];
   if (!room) return;
@@ -1279,6 +1355,22 @@ function handlePlayerLeave(ws: WebSocket) {
   const leavingPlayer = room.players.find(p => p.id === playerId);
   const leavingPlayerName = leavingPlayer ? leavingPlayer.name : 'Người chơi';
 
+  if (room.status === 'playing' && leavingPlayer) {
+    if (room.dyingTimer && room.activeAction?.dyingPlayerId === playerId) {
+      clearTimeout(room.dyingTimer);
+      room.dyingTimer = undefined;
+    }
+    room.pendingActions = room.pendingActions.filter(action =>
+      action.sourcePlayerId !== playerId && action.targetPlayerId !== playerId &&
+      action.duelTurnPlayerId !== playerId && action.dyingPlayerId !== playerId
+    );
+    room.pendingDamages = room.pendingDamages.filter(damage => damage.sourceId !== playerId && damage.targetId !== playerId);
+    if (room.activeAction && (
+      room.activeAction.sourcePlayerId === playerId || room.activeAction.targetPlayerId === playerId ||
+      room.activeAction.duelTurnPlayerId === playerId || room.activeAction.dyingPlayerId === playerId
+    )) room.activeAction = null;
+    eliminatePlayer(room, playerId, playerId);
+  }
   room.players = room.players.filter(p => p.id !== playerId);
   addSystemLog(roomCode, `${leavingPlayerName} đã rời phòng.`);
 
@@ -1294,19 +1386,16 @@ function handlePlayerLeave(ws: WebSocket) {
       room.players[0].isHost = true;
       addSystemLog(roomCode, `${room.players[0].name} là chủ phòng mới.`);
     }
-    if (room.status === 'playing') {
-      // If leaving player was playing, mark them eliminated and verify victory
-      if (leavingPlayer) {
-        leavingPlayer.isEliminated = true;
-      }
-      checkVictoryConditions(room);
-    }
+    if (room.status === 'playing') checkVictoryConditions(room);
     broadcastToRoom(roomCode);
   }
+  sendPublicRooms();
 }
 
 // WebSocket connection
 wss.on('connection', (ws) => {
+  responsiveSockets.add(ws);
+  ws.on('pong', () => responsiveSockets.add(ws));
   console.log('Client connected to War of elements engine.');
 
   ws.on('message', (message) => {
@@ -1322,6 +1411,25 @@ wss.on('connection', (ws) => {
             status: r.status
           }));
           ws.send(JSON.stringify({ type: 'PUBLIC_ROOMS_LIST', payload: { rooms: publicRoomsList } }));
+          break;
+        }
+
+        case 'RESUME_SESSION': {
+          const token = String(data.payload?.sessionToken || '');
+          const session = playerSessions.get(token);
+          const room = session && rooms[session.roomCode];
+          const player = room?.players.find(p => p.id === session?.playerId);
+          if (!session || !room || !player) {
+            ws.send(JSON.stringify({ type: 'SESSION_EXPIRED' }));
+            break;
+          }
+          attachSession(ws, player.id, room.code, token);
+          player.isConnected = true;
+          ws.send(JSON.stringify({ type: 'ROOM_JOINED', payload: {
+            room: getSanitizedRoom(room, player.id), myPlayerId: player.id,
+            sessionToken: token, resumed: true
+          } }));
+          broadcastToRoom(room.code);
           break;
         }
 
@@ -1350,6 +1458,7 @@ wss.on('connection', (ws) => {
             protectedByPlayerId: null,
             strikePlayedThisTurn: 0,
             dodgesUsedThisTurn: 0,
+            isConnected: true,
           };
 
           rooms[roomCode] = {
@@ -1375,16 +1484,18 @@ wss.on('connection', (ws) => {
             discardPile: []
           };
 
-          wsMeta.set(ws, { playerId: newPlayer.id, roomCode });
+          const sessionToken = attachSession(ws, newPlayer.id, roomCode);
           addSystemLog(roomCode, `${newPlayer.name} đã lập phòng ${roomCode}.`);
 
           ws.send(JSON.stringify({
             type: 'ROOM_JOINED',
             payload: {
               room: getSanitizedRoom(rooms[roomCode], newPlayer.id),
-              myPlayerId: newPlayer.id
+              myPlayerId: newPlayer.id,
+              sessionToken
             }
           }));
+          sendPublicRooms();
           break;
         }
 
@@ -1432,8 +1543,9 @@ wss.on('connection', (ws) => {
           };
 
           room.players.push(newPlayer);
+          newPlayer.isConnected = true;
           room.privateLogs[newPlayer.id] = [];
-          wsMeta.set(ws, { playerId: newPlayer.id, roomCode: cleanCode });
+          const sessionToken = attachSession(ws, newPlayer.id, cleanCode);
 
           addSystemLog(cleanCode, `${newPlayer.name} đã gia nhập.`);
 
@@ -1441,11 +1553,13 @@ wss.on('connection', (ws) => {
             type: 'ROOM_JOINED',
             payload: {
               room: getSanitizedRoom(room, newPlayer.id),
-              myPlayerId: newPlayer.id
+              myPlayerId: newPlayer.id,
+              sessionToken
             }
           }));
 
           broadcastToRoom(cleanCode);
+          sendPublicRooms();
           break;
         }
 
@@ -1522,6 +1636,7 @@ wss.on('connection', (ws) => {
           // Start the Turn
           startTurn(room, startingPlayer.id);
           broadcastToRoom(meta.roomCode);
+          sendPublicRooms();
           break;
         }
 
@@ -2667,11 +2782,12 @@ wss.on('connection', (ws) => {
 
           addSystemLog(meta.roomCode, `Phòng đấu được đưa về Chờ bởi ${player.name}.`);
           broadcastToRoom(meta.roomCode);
+          sendPublicRooms();
           break;
         }
 
         case 'LEAVE_ROOM': {
-          handlePlayerLeave(ws);
+          handlePlayerLeave(ws, true);
           ws.send(JSON.stringify({ type: 'LEFT_SUCCESS' }));
           break;
         }

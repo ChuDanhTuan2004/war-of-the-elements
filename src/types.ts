@@ -70,6 +70,7 @@ export interface Player {
   color: string;
   isReady: boolean;
   isHost: boolean;
+  isConnected?: boolean;
   score: number; // Keep score for backward compatibility or display
 
   // Card Game Fields

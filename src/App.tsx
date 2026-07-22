@@ -20,6 +20,10 @@ export default function App() {
   const [language, setLanguage] = useState<'vi' | 'en'>('vi');
 
   const socketRef = useRef<WebSocket | null>(null);
+  const connectPromiseRef = useRef<Promise<WebSocket> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const shuttingDownRef = useRef(false);
 
   // Play subtle futuristic synth game audio cues (Web Audio API)
   const playSound = (type: 'click' | 'transition' | 'success' | 'alert') => {
@@ -74,7 +78,10 @@ export default function App() {
 
   // Initialize and connect WebSocket
   const connectSocket = (): Promise<WebSocket> => {
-    return new Promise((resolve, reject) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) return Promise.resolve(socketRef.current);
+    if (connectPromiseRef.current) return connectPromiseRef.current;
+
+    const connection = new Promise<WebSocket>((resolve, reject) => {
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
         resolve(socketRef.current);
         return;
@@ -88,8 +95,14 @@ export default function App() {
       socketRef.current = ws;
 
       ws.onopen = () => {
+        connectPromiseRef.current = null;
+        reconnectAttemptRef.current = 0;
         setIsConnected(true);
         setSocketError(null);
+        const sessionToken = localStorage.getItem('woe-session-token');
+        if (sessionToken) {
+          ws.send(JSON.stringify({ type: 'RESUME_SESSION', payload: { sessionToken } }));
+        }
         resolve(ws);
       };
 
@@ -105,6 +118,17 @@ export default function App() {
               setMyPlayerId(data.payload.myPlayerId);
               setChatMessages([]); // Reset chat for new room
               setCurrentScreen('room');
+              if (data.payload.sessionToken) {
+                localStorage.setItem('woe-session-token', data.payload.sessionToken);
+              }
+              break;
+            }
+
+            case 'SESSION_EXPIRED': {
+              localStorage.removeItem('woe-session-token');
+              setRoom(null);
+              setMyPlayerId(null);
+              setChatMessages([]);
               break;
             }
 
@@ -141,6 +165,7 @@ export default function App() {
               setMyPlayerId(null);
               setChatMessages([]);
               setCurrentScreen('lobby-finder');
+              localStorage.removeItem('woe-session-token');
               break;
             }
 
@@ -162,6 +187,7 @@ export default function App() {
       ws.onerror = (err) => {
         console.error('WebSocket connection error:', err);
         setSocketError('Không thể kết nối đến server. Đang thử kết nối lại...');
+        connectPromiseRef.current = null;
         reject(err);
       };
 
@@ -170,9 +196,18 @@ export default function App() {
         if (socketRef.current === ws) {
           socketRef.current = null;
         }
+        connectPromiseRef.current = null;
         console.log('WebSocket connection closed.');
+        if (!shuttingDownRef.current) {
+          const delay = Math.min(1000 * 2 ** reconnectAttemptRef.current, 10000);
+          reconnectAttemptRef.current += 1;
+          if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+          reconnectTimerRef.current = setTimeout(() => connectSocket().catch(() => {}), delay);
+        }
       };
     });
+    connectPromiseRef.current = connection;
+    return connection;
   };
 
   // Safe action dispatcher ensuring socket is open
@@ -275,8 +310,11 @@ export default function App() {
 
   // Auto-connect socket on load to establish isConnected state
   useEffect(() => {
+    shuttingDownRef.current = false;
     connectSocket().catch(() => {});
     return () => {
+      shuttingDownRef.current = true;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       const socket = socketRef.current;
       if (socket) {
         // StrictMode mounts effects twice in development. Detach callbacks before
@@ -296,7 +334,7 @@ export default function App() {
   useEffect(() => {
     if (currentScreen === 'lobby-finder') {
       fetchLiveRooms();
-      const interval = setInterval(fetchLiveRooms, 4000);
+      const interval = setInterval(fetchLiveRooms, 15000);
       return () => clearInterval(interval);
     }
   }, [currentScreen, isConnected]);
