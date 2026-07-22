@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Bot, 
   Users, 
   Volume2, 
   VolumeX, 
@@ -32,19 +31,14 @@ export default function HomeScreen({
   language,
   onToggleLanguage,
 }: HomeScreenProps) {
-  const [showAiModal, setShowAiModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selectedElement, setSelectedElement] = useState<'fire' | 'water' | 'earth' | 'lightning'>('fire');
 
   const content = {
     en: {
       slogan: "Master the Elements. Conquer the Battlefield.",
-      vsAiTitle: "Play vs AI",
-      vsAiDesc: "Practice your strategy against intelligent AI.",
       friendsTitle: "Play with Friends",
       friendsDesc: "Join an existing room or create your own battle.",
-      comingSoon: "Coming Soon",
-      comingSoonDesc: "This feature is currently under development in the War of the Elements roadmap.",
       settingsTitle: "Game Settings",
       difficulty: "Graphics Quality",
       serverRegion: "Server Region",
@@ -52,12 +46,8 @@ export default function HomeScreen({
     },
     vi: {
       slogan: "Làm chủ Nguyên tố. Chinh phục Chiến trường.",
-      vsAiTitle: "Chơi với Máy (AI)",
-      vsAiDesc: "Rèn luyện tư duy chiến thuật trước AI thông minh.",
       friendsTitle: "Chơi cùng Bạn bè",
       friendsDesc: "Vào phòng có sẵn hoặc tự tạo trận chiến multiplayer.",
-      comingSoon: "Tính năng đang phát triển",
-      comingSoonDesc: "Chế độ chơi đơn đối chiến với AI đang được hoàn thiện trong lộ trình phát triển War of the Elements.",
       settingsTitle: "Cài đặt Game",
       difficulty: "Chất lượng đồ họa",
       serverRegion: "Khu vực Máy chủ",
@@ -195,38 +185,8 @@ export default function HomeScreen({
 
       {/* 3. GAME MODE SELECTION */}
       <div className="w-full max-w-4xl mx-auto px-4 pb-16 z-10">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          
-          {/* MODE CARD A: PLAY VS AI */}
-          <motion.div
-            whileHover={{ y: -6, scale: 1.01 }}
-            onClick={() => setShowAiModal(true)}
-            className="group relative bg-slate-900/40 backdrop-blur-md rounded-2xl border border-slate-800 p-6 md:p-8 text-left cursor-pointer transition-all duration-300 hover:border-slate-700 hover:bg-slate-900/60 shadow-xl overflow-hidden"
-          >
-            {/* Hover state light glow */}
-            <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-indigo-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
-            
-            <div className="flex items-start gap-4">
-              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl text-slate-400 group-hover:text-indigo-400 group-hover:border-indigo-500/30 transition-colors">
-                <Bot className="w-8 h-8" />
-              </div>
-              <div className="space-y-1">
-                <h3 className="text-xl font-bold text-slate-200 group-hover:text-white transition-colors">
-                  {content.vsAiTitle}
-                </h3>
-                <p className="text-xs text-slate-500 group-hover:text-slate-400 transition-colors leading-relaxed">
-                  {content.vsAiDesc}
-                </p>
-                <div className="pt-3">
-                  <span className="text-[10px] font-bold text-amber-500/80 bg-amber-500/5 px-2.5 py-1 rounded-md border border-amber-500/10">
-                    AI DEVELOPMENT
-                  </span>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* MODE CARD B: PLAY WITH FRIENDS */}
+        <div className="max-w-xl mx-auto">
+          {/* PLAY WITH FRIENDS */}
           <motion.div
             whileHover={{ y: -6, scale: 1.01 }}
             onClick={onPlayWithFriends}
@@ -267,58 +227,6 @@ export default function HomeScreen({
         <p>© 2026 War of the Elements. All rights reserved.</p>
         <p className="font-mono">Client: v1.4.2-AAA | Engine: Node WebSocket server</p>
       </div>
-
-      {/* ================= MODAL: COMING SOON ================= */}
-      <AnimatePresence>
-        {showAiModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            {/* Backdrop */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowAiModal(false)}
-              className="absolute inset-0 bg-black/80 backdrop-blur-md"
-            />
-            
-            {/* Modal Body */}
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative z-10 text-center"
-            >
-              <div className="absolute top-4 right-4">
-                <button
-                  onClick={() => setShowAiModal(false)}
-                  className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="w-16 h-16 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-500 mx-auto mb-4 border border-amber-500/20">
-                <Bot className="w-8 h-8 animate-bounce" />
-              </div>
-
-              <h3 className="text-xl font-extrabold text-white mb-2 uppercase tracking-wide">
-                {content.comingSoon}
-              </h3>
-              
-              <p className="text-sm text-slate-400 mb-6 leading-relaxed">
-                {content.comingSoonDesc}
-              </p>
-
-              <button
-                onClick={() => setShowAiModal(false)}
-                className="w-full py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-indigo-900/20"
-              >
-                {content.close}
-              </button>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* ================= MODAL: SETTINGS ================= */}
       <AnimatePresence>

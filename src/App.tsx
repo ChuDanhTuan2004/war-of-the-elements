@@ -167,7 +167,9 @@ export default function App() {
 
       ws.onclose = () => {
         setIsConnected(false);
-        socketRef.current = null;
+        if (socketRef.current === ws) {
+          socketRef.current = null;
+        }
         console.log('WebSocket connection closed.');
       };
     });
@@ -275,8 +277,17 @@ export default function App() {
   useEffect(() => {
     connectSocket().catch(() => {});
     return () => {
-      if (socketRef.current) {
-        socketRef.current.close();
+      const socket = socketRef.current;
+      if (socket) {
+        // StrictMode mounts effects twice in development. Detach callbacks before
+        // the intentional cleanup so a closing socket cannot report an error or
+        // clear the replacement connection created by the next effect run.
+        socket.onerror = null;
+        socket.onclose = null;
+        socket.close();
+        if (socketRef.current === socket) {
+          socketRef.current = null;
+        }
       }
     };
   }, []);

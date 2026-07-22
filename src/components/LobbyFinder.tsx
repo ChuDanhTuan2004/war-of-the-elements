@@ -62,13 +62,6 @@ export default function LobbyFinder({
   const [localError, setLocalError] = useState('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Simulated public rooms for full visual compliance if no active rooms are on the server
-  const simulatedRooms = [
-    { code: 'FIRE88', hostName: 'HỏaThần#909', playerCount: 3, maxCount: 12, status: 'lobby', ping: '12ms', element: 'fire' },
-    { code: 'AQUA42', hostName: 'AquaHunter#121', playerCount: 12, maxCount: 12, status: 'playing', ping: '24ms', element: 'water' },
-    { code: 'ZAP999', hostName: 'GigaZapper#442', playerCount: 1, maxCount: 12, status: 'lobby', ping: '18ms', element: 'lightning' }
-  ];
-
   const content = {
     en: {
       back: "Back to Menu",
@@ -149,18 +142,15 @@ export default function LobbyFinder({
     }, 800);
   };
 
-  // Combine real live rooms from backend + simulated rooms (if real is empty, we show simulated list labeled correctly)
-  const activeRoomsCombined = liveRooms.length > 0 
-    ? liveRooms.map(r => ({
-        code: r.code,
-        hostName: r.hostName,
-        playerCount: r.playerCount,
-        maxCount: 12,
-        status: r.status,
-        ping: '15ms',
-        element: r.code.charCodeAt(0) % 2 === 0 ? 'water' : 'fire'
-      }))
-    : simulatedRooms;
+  const activeRoomsCombined = liveRooms.map(r => ({
+    code: r.code,
+    hostName: r.hostName,
+    playerCount: r.playerCount,
+    maxCount: 12,
+    status: r.status,
+    ping: '15ms',
+    element: r.code.charCodeAt(0) % 2 === 0 ? 'water' : 'fire'
+  }));
 
   // Search filter
   const filteredRooms = activeRoomsCombined.filter(room => 
