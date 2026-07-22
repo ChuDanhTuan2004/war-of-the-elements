@@ -8,7 +8,6 @@ interface LobbyViewProps {
   room: Room;
   myPlayerId: string;
   chatMessages: ChatMessage[];
-  onToggleReady: () => void;
   onStartGame: () => void;
   onLeaveRoom: () => void;
   onSendChat: (text: string) => void;
@@ -19,7 +18,6 @@ export default function LobbyView({
   room,
   myPlayerId,
   chatMessages,
-  onToggleReady,
   onStartGame,
   onLeaveRoom,
   onSendChat,
@@ -31,9 +29,8 @@ export default function LobbyView({
 
   const me = room.players.find(p => p.id === myPlayerId);
   const isHost = me?.isHost || false;
-  const readyCount = room.players.filter(p => p.isReady).length;
   const totalPlayers = room.players.length;
-  const allReady = room.players.every(p => p.isReady) && totalPlayers >= 3;
+  const canStart = totalPlayers >= 3;
 
   // Copy Room Code to clipboard
   const handleCopyCode = () => {
@@ -110,7 +107,7 @@ export default function LobbyView({
                     initial={{ opacity: 0, scale: 0.9 }}
                     animate={{ opacity: 1, scale: 1 }}
                     className="relative bg-slate-900/60 border rounded-xl p-4 flex flex-col items-center justify-center text-center group transition-all"
-                    style={{ borderColor: player.isReady ? player.color : '#1e293b' }}
+                    style={{ borderColor: player.color }}
                   >
                     {/* Corner badge for Host */}
                     {player.isHost && (
@@ -125,7 +122,7 @@ export default function LobbyView({
                       style={{ 
                         backgroundColor: `${player.color}15`,
                         border: `2px solid ${player.color}`,
-                        boxShadow: player.isReady ? `0 0 15px ${player.color}40` : 'none'
+                        boxShadow: `0 0 15px ${player.color}40`
                       }}
                     >
                       {player.avatar}
@@ -142,16 +139,7 @@ export default function LobbyView({
                       {player.name} {isMe && <span className="text-xs text-indigo-400">(Bạn)</span>}
                     </p>
 
-                    {/* Ready label */}
-                    <div className="mt-2.5">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                        player.isReady 
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
-                          : 'bg-slate-800 text-slate-400'
-                      }`}>
-                        {player.isReady ? 'SẴN SÀNG' : 'CHỜ'}
-                      </span>
-                    </div>
+                    <div className="mt-2.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">ĐÃ VÀO PHÒNG</div>
                   </motion.div>
                 );
               } else {
@@ -184,28 +172,18 @@ export default function LobbyView({
           {isHost ? (
             <button
               onClick={onStartGame}
-              disabled={!allReady}
+              disabled={!canStart}
               className={`flex-[2] py-4 px-6 rounded-xl font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-transform duration-200 active:scale-[0.98] ${
-                allReady
+                canStart
                   ? 'bg-gradient-to-r from-emerald-600 to-teal-500 text-white shadow-lg shadow-emerald-950/40 hover:from-emerald-500 hover:to-teal-400'
                   : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/60'
               }`}
             >
               <Play className="w-5 h-5 fill-current" />
-              BẮT ĐẦU TRẬN ĐẤU ({readyCount}/{totalPlayers} Sẵn sàng)
+              BẮT ĐẦU TRẬN ĐẤU ({totalPlayers} người chơi)
             </button>
           ) : (
-            <button
-              onClick={onToggleReady}
-              className={`flex-[2] py-4 px-6 rounded-xl font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-transform duration-200 active:scale-[0.98] ${
-                me?.isReady
-                  ? 'bg-amber-600 hover:bg-amber-500 text-white shadow-lg'
-                  : 'bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-lg'
-              }`}
-            >
-              <Check className="w-5 h-5" />
-              {me?.isReady ? 'HUỶ SẴN SÀNG' : 'SẴN SÀNG CHƠI'}
-            </button>
+            <div className="flex-[2] py-4 px-6 rounded-xl font-bold text-center bg-emerald-950/30 text-emerald-400 border border-emerald-800/40">Đã vào phòng · Đang chờ chủ phòng bắt đầu</div>
           )}
         </div>
 
@@ -214,13 +192,6 @@ export default function LobbyView({
           <div className="bg-rose-950/20 border border-rose-850 rounded-xl p-3 text-xs text-rose-400 flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 shrink-0" />
             <span>Trò chơi cần tối thiểu 3 người để khởi tranh. Hãy chia sẻ mã phòng cho bạn bè!</span>
-          </div>
-        )}
-
-        {isHost && totalPlayers >= 3 && !allReady && (
-          <div className="bg-amber-950/20 border border-amber-800/40 rounded-xl p-3 text-xs text-amber-400 flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 shrink-0" />
-            <span>Yêu cầu tất cả người chơi phải bấm &ldquo;Sẵn sàng&rdquo; để bắt đầu trận đấu.</span>
           </div>
         )}
 

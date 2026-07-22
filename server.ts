@@ -1524,7 +1524,7 @@ wss.on('connection', (ws) => {
             name: playerName || `Anh hùng ${room.players.length + 1}`,
             avatar: avatar || '💧',
             color: color || '#3b82f6',
-            isReady: false,
+            isReady: true,
             isHost: false,
             score: 0,
             hp: 4,
@@ -1563,22 +1563,6 @@ wss.on('connection', (ws) => {
           break;
         }
 
-        case 'TOGGLE_READY': {
-          const meta = wsMeta.get(ws);
-          if (!meta) return;
-
-          const room = rooms[meta.roomCode];
-          if (!room) return;
-
-          const player = room.players.find(p => p.id === meta.playerId);
-          if (player) {
-            player.isReady = !player.isReady;
-            addSystemLog(meta.roomCode, `${player.name} hiện tại đang ${player.isReady ? 'SẴN SÀNG' : 'CHỜ'}.`);
-            broadcastToRoom(meta.roomCode);
-          }
-          break;
-        }
-
         case 'START_GAME': {
           const meta = wsMeta.get(ws);
           if (!meta) return;
@@ -1594,15 +1578,6 @@ wss.on('connection', (ws) => {
 
           if (room.players.length < 3) {
             ws.send(JSON.stringify({ type: 'ERROR', message: 'Trò chơi cần tối thiểu 3 người để bắt đầu.' }));
-            return;
-          }
-
-          const unreadyPlayers = room.players.filter(p => !p.isReady);
-          if (unreadyPlayers.length > 0) {
-            ws.send(JSON.stringify({
-              type: 'ERROR',
-              message: `Không thể bắt đầu. Vẫn còn người chưa sẵn sàng: ${unreadyPlayers.map(p => p.name).join(', ')}.`
-            }));
             return;
           }
 
@@ -2766,7 +2741,7 @@ wss.on('connection', (ws) => {
 
           room.players.forEach(p => {
             p.score = 0;
-            p.isReady = p.isHost;
+            p.isReady = true;
             p.hp = 4;
             p.maxHp = 4;
             p.isRevealed = false;

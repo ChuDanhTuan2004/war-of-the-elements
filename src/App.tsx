@@ -133,7 +133,7 @@ export default function App() {
             }
 
             case 'ROOM_UPDATE': {
-              setRoom(data.payload.room || data.room);
+              setRoom(data.payload?.room ?? data.room);
               break;
             }
 
@@ -233,11 +233,6 @@ export default function App() {
   const handleJoinRoom = (playerName: string, avatar: string, color: string, roomCode: string) => {
     playSound('transition');
     sendSocketAction('JOIN_ROOM', { playerName, avatar, color, roomCode });
-  };
-
-  const handleToggleReady = () => {
-    playSound('click');
-    sendSocketAction('TOGGLE_READY');
   };
 
   const handleStartGame = () => {
@@ -459,7 +454,6 @@ export default function App() {
                   room={room}
                   myPlayerId={myPlayerId!}
                   chatMessages={chatMessages}
-                  onToggleReady={handleToggleReady}
                   onStartGame={handleStartGame}
                   onLeaveRoom={handleLeaveRoom}
                   onSendChat={handleSendChat}
