@@ -105,6 +105,8 @@ export default function GameView({
   const [discardSelections, setDiscardSelections] = useState<string[]>([]);
   const [responseSelections, setResponseSelections] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<'battle' | 'rules' | 'history'>('battle');
+  const [detailModal, setDetailModal] = useState<'hero' | 'intel' | null>(null);
+  const [detailPlayerId, setDetailPlayerId] = useState<string | null>(null);
 
   useEffect(() => {
     setResponseSelections([]);
@@ -238,13 +240,13 @@ export default function GameView({
   };
 
   return (
-    <div className="w-full max-w-7xl mx-auto flex flex-col gap-5 min-h-[85vh]">
+    <div className="w-full h-full min-h-0 max-w-[1600px] mx-auto flex flex-col gap-2 overflow-hidden">
       
       {/* 1. STATE PANEL: Turn Info & Active action banner */}
-      <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex flex-col md:flex-row justify-between items-center gap-4">
+      <div className="shrink-0 bg-slate-900/50 border border-slate-800 rounded-xl px-3 py-2 flex flex-row justify-between items-center gap-2">
         <div className="flex items-center gap-4">
-          <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-indigo-500/10 text-indigo-400">
-            <Clock className="w-6 h-6 animate-pulse" />
+          <div className="hidden sm:flex items-center justify-center w-9 h-9 rounded-xl bg-indigo-500/10 text-indigo-400">
+            <Clock className="w-5 h-5 animate-pulse" />
           </div>
           <div>
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
@@ -264,15 +266,16 @@ export default function GameView({
         </div>
 
         {/* Deck and Discard count metrics */}
-        <div className="flex items-center gap-3">
-          <div className="bg-slate-950 px-4 py-2 rounded-xl border border-slate-800 flex items-center gap-2.5">
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => { setActiveTab('battle'); setDetailModal('intel'); }} className="px-2.5 py-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-[10px] font-bold text-indigo-300">CHI TIẾT</button>
+          <div className="bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 flex items-center gap-1.5">
             <Layers className="w-4 h-4 text-slate-500" />
             <div className="text-xs">
               <p className="text-[9px] text-slate-600 font-bold uppercase">BÀI RÚT</p>
               <p className="font-mono font-bold text-slate-200">{room.deckCount} lá</p>
             </div>
           </div>
-          <div className="bg-slate-950 px-4 py-2 rounded-xl border border-slate-800 flex items-center gap-2.5">
+          <div className="hidden sm:flex bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 items-center gap-1.5">
             <RefreshCw className="w-4 h-4 text-slate-500" />
             <div className="text-xs">
               <p className="text-[9px] text-slate-600 font-bold uppercase">BÀI BỎ</p>
@@ -283,10 +286,10 @@ export default function GameView({
       </div>
 
       {/* 2. MAIN BATTLE ARENA GRID */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1">
+      <div className="grid grid-cols-1 gap-2 flex-1 min-h-0 overflow-hidden">
         
         {/* LEFT & CENTER: Battlefield layout */}
-        <div className="lg:col-span-2 flex flex-col gap-5">
+        <div className="flex flex-col gap-2 min-h-0 overflow-hidden">
           
           {/* Active Action Resolution Banner */}
           <AnimatePresence>
@@ -295,7 +298,7 @@ export default function GameView({
                 initial={{ opacity: 0, y: -15 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
-                className="bg-slate-950/90 border border-indigo-500/30 rounded-2xl p-5 shadow-2xl relative overflow-hidden"
+                className="shrink-0 bg-slate-950/90 border border-indigo-500/30 rounded-xl p-2.5 shadow-2xl relative overflow-hidden max-h-28"
               >
                 {/* Glowing border accent */}
                 <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-indigo-500 to-transparent animate-pulse" />
@@ -486,12 +489,12 @@ export default function GameView({
           </AnimatePresence>
 
           {/* Opponents Grid: The Battlefield */}
-          <div>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+          <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center gap-1.5 shrink-0">
               <Sword className="w-3.5 h-3.5" /> Bản đồ chiến trường đối thủ
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+            <div className="flex lg:grid lg:grid-cols-4 xl:grid-cols-6 gap-2 overflow-x-auto lg:overflow-x-hidden lg:overflow-y-auto min-h-0 pb-1">
               {room.players.filter(p => p.id !== myPlayerId).map((player) => {
                 const isTargetSelected = selectedTargetId === player.id;
                 const canTargetThis = selectedCard && isValidTarget(player);
@@ -503,7 +506,7 @@ export default function GameView({
                 return (
                   <motion.div
                     key={player.id}
-                    className={`relative border rounded-2xl p-4 flex flex-col justify-between h-[175px] transition-all overflow-hidden ${
+                    className={`relative border rounded-xl p-2.5 flex flex-col justify-between h-[145px] w-[170px] lg:w-auto shrink-0 transition-all overflow-hidden ${
                       player.isEliminated 
                         ? 'bg-slate-950/20 border-slate-900 opacity-65' 
                         : isTargetSelected 
@@ -635,6 +638,7 @@ export default function GameView({
                           Mục Tiêu
                         </button>
                       )}
+                      {!canTargetThis && <button onClick={() => setDetailPlayerId(player.id)} className="px-2 py-1 rounded-md text-[9px] font-bold bg-slate-800 text-slate-300">XEM</button>}
                     </div>
 
                     {/* Skull watermark if eliminated */}
@@ -654,7 +658,7 @@ export default function GameView({
         </div>
 
         {/* RIGHT COLUMN: Interactive Tabs (History logs, character lists, guidelines) */}
-        <div className="bg-slate-900/30 border border-slate-800 rounded-3xl p-5 flex flex-col h-[520px]">
+        <div className="hidden bg-slate-900/30 border border-slate-800 rounded-3xl p-5 flex-col h-[520px]">
           
           {/* Navigation Tab list */}
           <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl mb-4 text-xs font-bold text-slate-400">
@@ -779,26 +783,26 @@ export default function GameView({
 
       {/* 3. FOOTER ZONE: My Player Status Panel, hand, and skills */}
       {me && (
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative overflow-hidden flex flex-col md:flex-row justify-between items-stretch gap-6">
+        <div className="shrink-0 h-[42%] min-h-[230px] bg-slate-900 border border-slate-800 rounded-xl p-2 shadow-2xl relative overflow-hidden flex flex-row justify-between items-stretch gap-2">
           
           {/* My Hero Profile card */}
-          <div className="md:w-1/4 flex flex-col justify-between border-b md:border-b-0 md:border-r border-slate-800 pb-5 md:pb-0 md:pr-6 gap-4">
+          <div className="w-24 sm:w-40 lg:w-52 shrink-0 flex flex-col justify-between border-r border-slate-800 pr-2 gap-2 overflow-hidden">
             <div>
               <div className="flex items-center gap-3">
-                <div 
-                  className="w-12 h-12 rounded-full flex items-center justify-center text-3xl"
+                <button onClick={() => setDetailModal('hero')}
+                  className="w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-2xl"
                   style={{ backgroundColor: `${me.color}15`, border: `2px solid ${me.color}` }}
                 >
                   {me.avatar}
-                </div>
-                <div>
+                </button>
+                <div className="min-w-0">
                   <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest block">Thông tin của bạn</span>
                   <h4 className="font-extrabold text-base text-white">{me.name}</h4>
                 </div>
               </div>
 
               {/* Elemental theme if revealed or private */}
-              <div className="mt-3 bg-slate-950/80 border border-slate-850 p-2.5 rounded-xl space-y-1.5 text-xs">
+              <div className="hidden">
                 <div className="flex justify-between">
                   <span className="text-slate-500">Vương Quốc:</span>
                   <span className="font-bold text-slate-200">
@@ -852,8 +856,8 @@ export default function GameView({
               )}
 
               {/* Skill Description */}
-              {me.isRevealed && me.hero && (
-                <div className="p-2.5 bg-indigo-950/20 border border-indigo-500/20 rounded-xl">
+              {me.hero && (
+                <button onClick={() => setDetailModal('hero')} className="hidden lg:block text-left p-2 bg-indigo-950/20 border border-indigo-500/20 rounded-xl">
                   <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest block">Kỹ năng đặc quyền [KÍCH HOẠT]</span>
                   <span className="text-[8px] text-slate-500 uppercase tracking-wider block mb-1">Phase: {me.hero ? HERO_MAP[me.hero]?.skillPhase : ''}</span>
                   <p className="text-[10.5px] text-slate-300 mt-0.5 leading-relaxed">
@@ -862,13 +866,14 @@ export default function GameView({
                   {me.hero && HERO_MAP[me.hero]?.flavorText && (
                     <p className="text-[8px] text-slate-600 italic mt-1">"{HERO_MAP[me.hero].flavorText}"</p>
                   )}
-                </div>
+                </button>
               )}
+              <button onClick={() => setDetailModal('hero')} className="w-full py-1.5 rounded-lg bg-slate-800 text-[10px] font-bold text-indigo-300">NHÂN VẬT & KỸ NĂNG</button>
             </div>
           </div>
 
           {/* Hand cards selection panel */}
-          <div className="flex-1 flex flex-col justify-between gap-4">
+          <div className="min-w-0 flex-1 flex flex-col justify-between gap-1.5">
             
             <div className="flex justify-between items-center">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
@@ -900,7 +905,7 @@ export default function GameView({
             </div>
 
             {/* Cards view scroll list */}
-            <div className="flex-1 overflow-x-auto min-h-[140px] flex items-center gap-2.5 pb-2 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
+            <div className="flex-1 min-h-0 overflow-x-auto flex items-center gap-2 pb-1 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
               {me.cards.length === 0 ? (
                 <div className="w-full flex flex-col items-center justify-center text-slate-600 text-xs py-6">
                   <Layers className="w-8 h-8 opacity-25 mb-1.5" />
@@ -916,7 +921,7 @@ export default function GameView({
                       key={card.id}
                       onClick={() => handleCardClick(card.id)}
                       whileHover={{ y: -6, scale: 1.02 }}
-                      className={`w-28 h-36 shrink-0 border rounded-xl p-2.5 flex flex-col justify-between cursor-pointer transition-all select-none relative ${
+                      className={`w-20 h-28 sm:w-24 sm:h-32 shrink-0 border rounded-lg p-2 flex flex-col justify-between cursor-pointer transition-all select-none relative ${
                         isDiscardSelected
                           ? 'bg-rose-950/40 border-rose-500 shadow-lg shadow-rose-950/50'
                           : isSelected
@@ -964,8 +969,8 @@ export default function GameView({
             </div>
 
             {/* Selected Card Action details */}
-            <div className="min-h-[44px] flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-950/80 border border-slate-850 p-2.5 rounded-xl text-xs">
-              <div className="text-slate-400 flex items-center gap-1">
+            <div className="shrink-0 min-h-[38px] flex flex-row items-center justify-between gap-2 bg-slate-950/80 border border-slate-850 p-1.5 rounded-lg text-xs">
+              <div className="hidden md:flex text-slate-400 items-center gap-1 min-w-0">
                 {selectedCard ? (
                   <>
                     <span className="font-extrabold text-white">[ {selectedCard.name} ]</span>
@@ -998,6 +1003,39 @@ export default function GameView({
 
         </div>
       )}
+
+      <AnimatePresence>
+        {detailModal === 'hero' && me && (
+          <motion.div className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-sm p-3 flex items-center justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setDetailModal(null)}>
+            <motion.div initial={{ scale: .96, y: 12 }} animate={{ scale: 1, y: 0 }} onClick={event => event.stopPropagation()} className="w-full max-w-lg max-h-[85dvh] overflow-y-auto bg-slate-900 border border-indigo-500/30 rounded-2xl p-5 shadow-2xl">
+              <div className="flex justify-between gap-4 mb-5"><div><p className="text-[10px] text-indigo-400 font-black tracking-widest">THÔNG TIN RIÊNG CỦA BẠN</p><h2 className="text-2xl font-black mt-1">{me.hero || 'Chưa phân định'}</h2><p className="text-sm text-slate-400">{me.hero ? HERO_MAP[me.hero]?.role : ''}</p></div><button onClick={() => setDetailModal(null)} className="p-2 h-fit rounded-lg bg-slate-800"><X className="w-5 h-5" /></button></div>
+              <div className="grid grid-cols-2 gap-3 mb-4 text-sm"><div className="p-3 bg-slate-950 rounded-xl"><p className="text-xs text-slate-500">Vương quốc</p><p className="font-bold mt-1">{me.kingdom ? `${KINGDOM_EMOJI[me.kingdom]} ${KINGDOM_NAMES[me.kingdom]}` : 'Chưa xác định'}</p></div><div className="p-3 bg-slate-950 rounded-xl"><p className="text-xs text-slate-500">Trạng thái</p><p className="font-bold mt-1">{me.isRevealed ? 'Đã lật công khai' : 'Đang giữ bí mật'}</p></div></div>
+              {me.hero && HERO_MAP[me.hero] && <div className="p-4 bg-indigo-950/30 border border-indigo-500/20 rounded-xl"><p className="text-xs text-indigo-400 font-black tracking-wider">KỸ NĂNG NHÂN VẬT</p><p className="text-sm text-slate-200 leading-relaxed mt-2">{HERO_MAP[me.hero].skillDesc}</p><p className="text-xs text-slate-500 mt-2">Thời điểm: {HERO_MAP[me.hero].skillPhase}</p><p className="text-xs italic text-slate-500 mt-3">“{HERO_MAP[me.hero].flavorText}”</p></div>}
+              {!me.isRevealed && <p className="mt-4 text-xs text-amber-300 bg-amber-950/30 border border-amber-800/30 rounded-xl p-3">Thông tin này chỉ bạn nhìn thấy. Người chơi khác chỉ thấy nhân vật và kỹ năng sau khi bạn lật nhân vật.</p>}
+              {!me.isRevealed && !me.isEliminated && isMyTurn && room.turnPhase === 'action' && !room.activeAction && <button onClick={() => { onRevealHero(); setDetailModal(null); }} className="mt-4 w-full py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 font-black"><Sparkles className="w-4 h-4 inline mr-2" />LẬT NHÂN VẬT (+1 LÁ)</button>}
+            </motion.div>
+          </motion.div>
+        )}
+
+        {detailModal === 'intel' && (
+          <motion.div className="fixed inset-0 z-[100] bg-black/75 backdrop-blur-sm p-3 flex items-center justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setDetailModal(null)}>
+            <div onClick={event => event.stopPropagation()} className="w-full max-w-2xl h-[80dvh] bg-slate-900 border border-slate-700 rounded-2xl p-4 flex flex-col">
+              <div className="flex justify-between items-center mb-3"><div className="flex gap-2">{(['battle', 'rules', 'history'] as const).map(tab => <button key={tab} onClick={() => setActiveTab(tab)} className={`px-3 py-2 rounded-lg text-xs font-bold ${activeTab === tab ? 'bg-indigo-600' : 'bg-slate-800'}`}>{tab === 'battle' ? 'PHE PHÁI' : tab === 'rules' ? 'KỸ NĂNG' : 'DIỄN BIẾN'}</button>)}</div><button onClick={() => setDetailModal(null)} className="p-2 bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button></div>
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {activeTab === 'battle' && room.players.map(player => <button key={player.id} onClick={() => setDetailPlayerId(player.id)} className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl flex justify-between text-left"><span className="font-bold">{player.avatar} {player.name}</span><span className="text-xs text-slate-400">{player.isEliminated ? 'Đã bị loại' : player.isRevealed ? `${player.hero} · ${player.hp}/${player.maxHp} HP` : 'Chưa lật nhân vật'}</span></button>)}
+                {activeTab === 'rules' && room.players.filter(player => player.hero).map(player => <div key={player.id} className="p-4 bg-slate-950 border border-slate-800 rounded-xl"><p className="font-black text-indigo-400">{player.hero} <span className="text-xs text-slate-500">· {player.name}</span></p><p className="text-sm text-slate-300 mt-2">{player.hero ? HERO_MAP[player.hero]?.skillDesc : ''}</p></div>)}
+                {activeTab === 'history' && room.systemLogs.map((log, index) => <div key={index} className="p-2 border-b border-slate-800 text-xs font-mono text-emerald-400">{log}</div>)}
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {detailPlayerId && (() => {
+          const player = room.players.find(candidate => candidate.id === detailPlayerId);
+          if (!player) return null;
+          return <motion.div className="fixed inset-0 z-[110] bg-black/75 p-3 flex items-center justify-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setDetailPlayerId(null)}><div onClick={event => event.stopPropagation()} className="w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-5"><div className="flex justify-between"><div><p className="text-3xl">{player.avatar}</p><h2 className="text-xl font-black mt-2">{player.name}</h2></div><button onClick={() => setDetailPlayerId(null)} className="p-2 h-fit bg-slate-800 rounded-lg"><X className="w-4 h-4" /></button></div><div className="mt-4 space-y-3 text-sm"><div className="p-3 bg-slate-950 rounded-xl">Nhân vật: <b>{player.isRevealed ? player.hero : 'Chưa lật · đang ẩn'}</b></div><div className="p-3 bg-slate-950 rounded-xl">Sinh mệnh: <b>{player.hp === undefined ? 'Đang ẩn' : `${player.hp}/${player.maxHp} HP`}</b></div><div className="p-3 bg-slate-950 rounded-xl"><p className="font-bold mb-2">Trang bị</p>{player.equipments.length ? player.equipments.map(card => <p key={card.id} className="text-slate-400 py-1">{card.emoji} {card.name}: {card.description}</p>) : <p className="text-slate-500">Không có trang bị</p>}</div>{player.isRevealed && player.hero && <div className="p-3 bg-indigo-950/30 border border-indigo-500/20 rounded-xl"><p className="font-bold text-indigo-400">Kỹ năng {player.hero}</p><p className="text-slate-300 mt-2">{HERO_MAP[player.hero]?.skillDesc}</p></div>}</div></div></motion.div>;
+        })()}
+      </AnimatePresence>
 
     </div>
   );

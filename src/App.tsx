@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Gamepad2, Radio, Server, ShieldCheck, Wifi, WifiOff, Volume2, VolumeX } from 'lucide-react';
+import { Gamepad2 } from 'lucide-react';
 import { Room, ChatMessage } from './types';
 import LobbyView from './components/LobbyView';
 import GameView from './components/GameView';
@@ -388,7 +388,7 @@ export default function App() {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-8 md:py-12 flex flex-col justify-center items-center">
+      <main className={`flex-1 min-h-0 w-full mx-auto flex flex-col justify-center items-center ${room?.status === 'playing' ? 'max-w-[1600px] px-2 py-2 overflow-hidden' : 'max-w-6xl px-4 py-8 md:py-12'}`}>
         
         <AnimatePresence mode="wait">
           
@@ -489,20 +489,6 @@ export default function App() {
         </AnimatePresence>
 
       </main>
-
-      {/* Global Footer */}
-      <footer className="border-t border-slate-900 bg-slate-950/20 py-5 text-center text-xs text-slate-500 px-4">
-        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-1.5">
-            <Server className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Server: Express, ws (Node 22) | Front: Vite, React, Tailwind CSS 4, Framer Motion</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
-            <span>Verified 100% Client-Server Sync. No fake placeholders.</span>
-          </div>
-        </div>
-      </footer>
 
     </div>
   );
